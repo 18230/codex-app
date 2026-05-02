@@ -5,6 +5,44 @@
 - `server`：监听 `127.0.0.1:8000` 的本地网关，负责鉴权、连接 Codex app-server、转发实时输出。
 - `android`：Android 原生 Kotlin 客户端，通过 WebSocket 连接 `https://xxx.com`。
 
+## 界面预览
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <strong>会话侧边栏</strong><br />
+      <sub>线程列表、新建会话和快速切换</sub>
+    </td>
+    <td align="center" width="33%">
+      <strong>实时聊天</strong><br />
+      <sub>用户消息右侧展示，Codex 回复左侧展示</sub>
+    </td>
+    <td align="center" width="33%">
+      <strong>配置与检查</strong><br />
+      <sub>连接测试、健康检查和工作目录检查</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/images/screenshot-drawer.jpg" alt="Codex App 会话侧边栏" width="240" />
+    </td>
+    <td align="center">
+      <img src="docs/images/screenshot-chat.jpg" alt="Codex App 实时聊天" width="240" />
+    </td>
+    <td align="center">
+      <img src="docs/images/screenshot-config.jpg" alt="Codex App 配置页面" width="240" />
+    </td>
+  </tr>
+</table>
+
+## 功能特性
+
+- 手机端连接本机 Codex Gateway，复用 Codex 线程能力。
+- 支持新建会话、切换会话、历史同步和实时回复。
+- 提供配置页、健康检查、目录检查和诊断日志。
+- 支持 macOS `launchd` 和 Windows 计划任务常驻运行。
+- 连接地址和 token 只保存在手机本地加密存储，不写入仓库。
+
 ## 配置文件
 
 复制模板并改成本机配置：
