@@ -1446,11 +1446,11 @@ private fun InputBar(
     val shouldSend = canSend
     Row(
         modifier = modifier
-            .background(Color(0xFFF7F8F6), RoundedCornerShape(24.dp))
-            .border(1.dp, Color(0xFFE3E5E1), RoundedCornerShape(24.dp))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
+            .background(Color(0xFFF7F8F6), RoundedCornerShape(20.dp))
+            .border(1.dp, Color(0xFFEDEFEA), RoundedCornerShape(20.dp))
+            .padding(horizontal = 7.dp, vertical = 1.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         CompactTextField(
             value = draft,
@@ -1458,7 +1458,7 @@ private fun InputBar(
             modifier = keyboardOnFocusModifier(
                 Modifier
                     .weight(1f)
-                    .heightIn(min = 42.dp),
+                    .heightIn(min = 40.dp),
             ),
             placeholder = if (hasActiveTurn) "Codex 正在回复" else "消息",
             minLines = 1,
@@ -1466,7 +1466,7 @@ private fun InputBar(
             containerColor = Color.Transparent,
             borderColor = Color.Transparent,
             cornerRadius = 18.dp,
-            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 3.dp),
         )
         ChatActionButton(
             isStopping = hasActiveTurn && !shouldSend,
@@ -1489,15 +1489,15 @@ private fun ChatActionButton(isStopping: Boolean, enabled: Boolean, onClick: () 
     val iconTint = if (enabled) Color.White else Color(0xFF9CA39D)
     Box(
         modifier = Modifier
-            .size(42.dp)
-            .background(buttonColor, RoundedCornerShape(21.dp))
+            .size(34.dp)
+            .background(buttonColor, RoundedCornerShape(17.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = if (isStopping) Icons.Filled.Stop else Icons.AutoMirrored.Filled.Send,
             contentDescription = if (isStopping) "停止" else "发送",
-            modifier = Modifier.size(if (isStopping) 19.dp else 18.dp),
+            modifier = Modifier.size(if (isStopping) 17.dp else 16.dp),
             tint = iconTint,
         )
     }
