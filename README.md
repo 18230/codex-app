@@ -3,6 +3,7 @@
 本项目提供一个自用 Codex 手机端入口：
 
 - `server`：监听 `127.0.0.1:8000` 的本地网关，负责鉴权、连接 Codex app-server、转发实时输出。
+- `desktop`：Go + Wails 桌面版网关，提供配置界面、线程绑定和本机常驻运行。
 - `android`：Android 原生 Kotlin 客户端，通过 WebSocket 连接 `https://xxx.com`。
 
 ## 界面预览
@@ -41,7 +42,27 @@
 - 支持新建会话、切换会话、历史同步和实时回复。
 - 提供配置页、健康检查、目录检查和诊断日志。
 - 支持 macOS `launchd` 和 Windows 计划任务常驻运行。
+- 支持桌面版 `CodexMobileGateway`，可在界面中配置工作目录、token、Codex 路径并选择线程绑定。
 - 连接地址和 token 只保存在手机本地加密存储，不写入仓库。
+
+## 桌面网关
+
+桌面版位于 `desktop`，用于替代手动配置 `.env` 和启动脚本。首次启动会自动生成 token，`CODEX_THREAD_ID` 不需要手动填写，启动网关后在界面中刷新线程列表并选择要绑定的会话即可。
+
+macOS Apple Silicon 本机打包：
+
+```bash
+cd desktop
+./scripts/package-mac.sh
+```
+
+产物位置：
+
+```text
+desktop/build/bin/CodexMobileGateway.dmg
+```
+
+Windows 便携版通过 GitHub Actions 构建，产物名为 `CodexMobileGateway.exe`。第一版未做代码签名，系统可能提示安全确认。
 
 ## 配置文件
 

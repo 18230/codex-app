@@ -1,0 +1,216 @@
+:root {
+  color: #1f2328;
+  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100vh;
+  margin: 0;
+  background: #fff;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f2328;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #f6f8fa;
+}
+
+button:disabled {
+  color: #8c959f;
+  cursor: not-allowed;
+}
+
+input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #8c959f;
+  border-radius: 8px;
+  background: #fff;
+  outline: none;
+}
+
+input:focus {
+  border-color: #24292f;
+}
+
+.page {
+  width: min(940px, calc(100vw - 40px));
+  margin: 0 auto;
+  padding: 28px 0 40px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.topbar p {
+  margin: 6px 0 0;
+  color: #57606a;
+}
+
+.status {
+  padding: 6px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  color: #57606a;
+}
+
+.status.ok {
+  color: #116329;
+  border-color: #8ddb8c;
+}
+
+.panel {
+  padding: 22px 0;
+  border-top: 1px solid #d8dee4;
+}
+
+.section-title {
+  margin-bottom: 16px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.section-heading p {
+  margin: -8px 0 16px;
+  color: #57606a;
+}
+
+label {
+  display: block;
+  margin-bottom: 14px;
+}
+
+label span {
+  display: block;
+  margin-bottom: 7px;
+  font-weight: 600;
+}
+
+label small {
+  display: block;
+  margin-top: 6px;
+  color: #57606a;
+}
+
+.inline {
+  display: flex;
+  gap: 10px;
+}
+
+.inline button {
+  flex: 0 0 auto;
+}
+
+.grid.two {
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 14px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.thread-list {
+  display: grid;
+  gap: 8px;
+}
+
+.thread {
+  display: grid;
+  width: 100%;
+  height: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.thread.active {
+  border-color: #24292f;
+  background: #f6f8fa;
+}
+
+.thread strong {
+  font-weight: 600;
+}
+
+.thread span {
+  margin-top: 4px;
+  color: #57606a;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: 20px 0;
+  color: #57606a;
+}
+
+.diagnostics dl {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.diagnostics dt {
+  color: #57606a;
+}
+
+.diagnostics dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.message {
+  min-height: 22px;
+  margin-top: 18px;
+  color: #57606a;
+}

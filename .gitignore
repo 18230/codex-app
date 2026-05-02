@@ -13,3 +13,4 @@ android/app/build/
 android/local.properties
 android/captures/
 *.iml
+backups/
