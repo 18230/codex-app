@@ -1,5 +1,5 @@
 param(
-    [string]$EnvFile = $(Join-Path $HOME ".codex-mobile-gateway.env")
+    [string]$EnvFile = $(Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) ".env")
 )
 
 $ErrorActionPreference = "Stop"

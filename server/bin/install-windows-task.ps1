@@ -1,5 +1,5 @@
 param(
-    [string]$EnvFile = $(Join-Path $HOME ".codex-mobile-gateway.env"),
+    [string]$EnvFile = $(Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) ".env"),
     [string]$TaskName = "CodexMobileGateway"
 )
 
@@ -28,6 +28,7 @@ function Import-DotEnv {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServerDir = Split-Path -Parent $ScriptDir
+$ProjectDir = Split-Path -Parent $ServerDir
 $SupportDir = Join-Path $env:LOCALAPPDATA "CodexMobileGateway"
 $RuntimeDir = Join-Path $SupportDir "runtime"
 $LogDir = Join-Path $SupportDir "logs"
@@ -56,11 +57,18 @@ Copy-Item -Recurse -Force (Join-Path $ServerDir "node_modules") $RuntimeDir
 Copy-Item -Force (Join-Path $ServerDir "package.json") $RuntimeDir
 Copy-Item -Force (Join-Path $ServerDir "package-lock.json") $RuntimeDir
 Copy-Item -Force (Join-Path $ScriptDir "start-gateway.ps1") $RuntimeDir
+Copy-Item -Force $EnvFile (Join-Path $RuntimeDir ".env")
+$RuntimeEnvFile = Join-Path $RuntimeDir ".env"
+$RuntimeEnvText = Get-Content -Raw -Path $RuntimeEnvFile
+if ($RuntimeEnvText -notmatch "(?m)^CODEX_MOBILE_DEFAULT_CWD=.+") {
+    Add-Content -Path $RuntimeEnvFile -Value ""
+    Add-Content -Path $RuntimeEnvFile -Value "CODEX_MOBILE_DEFAULT_CWD=$ProjectDir"
+}
 
 $StartScript = Join-Path $RuntimeDir "start-gateway.ps1"
 $Stdout = Join-Path $LogDir "gateway.out.log"
 $Stderr = Join-Path $LogDir "gateway.err.log"
-$ActionArgument = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -EnvFile `"$EnvFile`" *> `"$Stdout`" 2> `"$Stderr`""
+$ActionArgument = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`" -EnvFile `"$RuntimeEnvFile`" *> `"$Stdout`" 2> `"$Stderr`""
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $ActionArgument
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
 $Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel LeastPrivilege
@@ -71,5 +79,6 @@ Start-ScheduledTask -TaskName $TaskName
 
 Write-Host "已安装并启动 Windows 计划任务: $TaskName"
 Write-Host "配置文件: $EnvFile"
+Write-Host "运行配置: $RuntimeEnvFile"
 Write-Host "运行目录: $RuntimeDir"
 Write-Host "日志目录: $LogDir"

@@ -4,10 +4,11 @@ set -euo pipefail
 LABEL="work.codex.mobile.gateway"
 SCRIPT_DIR="${0:A:h}"
 SERVER_DIR="${SCRIPT_DIR:h}"
+PROJECT_DIR="${SERVER_DIR:h}"
 SUPPORT_DIR="$HOME/Library/Application Support/CodexMobileGateway"
 RUNTIME_DIR="$SUPPORT_DIR/runtime"
 START_SCRIPT="$SUPPORT_DIR/start-gateway.sh"
-ENV_FILE="${CODEX_MOBILE_ENV_FILE:-$HOME/.codex-mobile-gateway.env}"
+ENV_FILE="${CODEX_MOBILE_ENV_FILE:-$SERVER_DIR/.env}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/CodexMobileGateway"
 
@@ -25,7 +26,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
     if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
       print -r -- "CODEX_THREAD_ID=${CODEX_THREAD_ID}"
     fi
-    print -r -- "CODEX_MOBILE_DEFAULT_CWD=${CODEX_MOBILE_DEFAULT_CWD:-/Users/gaoqi/Desktop/data/local}"
+    print -r -- "CODEX_MOBILE_DEFAULT_CWD=${CODEX_MOBILE_DEFAULT_CWD:-$PROJECT_DIR}"
     print -r -- "CODEX_BINARY=${CODEX_BINARY:-/Applications/Codex.app/Contents/Resources/codex}"
     print -r -- "CODEX_MOBILE_CLIENT_PING_INTERVAL_MS=${CODEX_MOBILE_CLIENT_PING_INTERVAL_MS:-15000}"
     print -r -- "CODEX_MOBILE_CLIENT_IDLE_TIMEOUT_MS=${CODEX_MOBILE_CLIENT_IDLE_TIMEOUT_MS:-45000}"
@@ -45,6 +46,14 @@ mkdir -p "$RUNTIME_DIR"
 cp -R "$SERVER_DIR/dist" "$RUNTIME_DIR/dist"
 cp -R "$SERVER_DIR/node_modules" "$RUNTIME_DIR/node_modules"
 cp "$SERVER_DIR/package.json" "$SERVER_DIR/package-lock.json" "$RUNTIME_DIR/"
+cp "$ENV_FILE" "$RUNTIME_DIR/.env"
+chmod 600 "$RUNTIME_DIR/.env"
+if ! grep -q '^CODEX_MOBILE_DEFAULT_CWD=.' "$RUNTIME_DIR/.env"; then
+  {
+    print -r -- ""
+    print -r -- "CODEX_MOBILE_DEFAULT_CWD=$PROJECT_DIR"
+  } >> "$RUNTIME_DIR/.env"
+fi
 
 cat > "$START_SCRIPT" <<'EOF'
 #!/bin/zsh
@@ -52,7 +61,7 @@ set -euo pipefail
 
 SUPPORT_DIR="${CODEX_MOBILE_SUPPORT_DIR:-$HOME/Library/Application Support/CodexMobileGateway}"
 RUNTIME_DIR="$SUPPORT_DIR/runtime"
-ENV_FILE="${CODEX_MOBILE_ENV_FILE:-$HOME/.codex-mobile-gateway.env}"
+ENV_FILE="${CODEX_MOBILE_ENV_FILE:-$RUNTIME_DIR/.env}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -66,7 +75,7 @@ export CODEX_MOBILE_HOST="${CODEX_MOBILE_HOST:-127.0.0.1}"
 export CODEX_MOBILE_PORT="${CODEX_MOBILE_PORT:-8000}"
 export CODEX_APP_SERVER_HOST="${CODEX_APP_SERVER_HOST:-127.0.0.1}"
 export CODEX_APP_SERVER_PORT="${CODEX_APP_SERVER_PORT:-39000}"
-export CODEX_MOBILE_DEFAULT_CWD="${CODEX_MOBILE_DEFAULT_CWD:-/Users/gaoqi/Desktop/data/local}"
+export CODEX_MOBILE_DEFAULT_CWD="${CODEX_MOBILE_DEFAULT_CWD:-$RUNTIME_DIR}"
 export CODEX_MOBILE_CLIENT_PING_INTERVAL_MS="${CODEX_MOBILE_CLIENT_PING_INTERVAL_MS:-15000}"
 export CODEX_MOBILE_CLIENT_IDLE_TIMEOUT_MS="${CODEX_MOBILE_CLIENT_IDLE_TIMEOUT_MS:-45000}"
 
@@ -131,5 +140,6 @@ launchctl kickstart -k "gui/$UID/$LABEL"
 
 echo "已安装并启动 launchd 服务: $LABEL"
 echo "配置文件: $ENV_FILE"
+echo "运行配置: $RUNTIME_DIR/.env"
 echo "运行目录: $RUNTIME_DIR"
 echo "日志目录: $LOG_DIR"

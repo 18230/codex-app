@@ -48,18 +48,19 @@
 复制模板并改成本机配置：
 
 ```bash
-cp server/.env.example ~/.codex-mobile-gateway.env
+cp server/.env.example server/.env
 ```
 
 最小配置：
 
 ```env
 CODEX_MOBILE_TOKEN=替换为至少16位随机token
-CODEX_MOBILE_DEFAULT_CWD=/path/to/your/project
 CODEX_BINARY=codex
 ```
 
 `CODEX_THREAD_ID` 可选。不配置时，网关启动会自动创建一个默认 Codex 线程；手机端发起新会话时会创建并绑定新线程。
+
+`CODEX_MOBILE_DEFAULT_CWD` 也可选。不配置时，脚本会默认使用当前项目根目录；迁移到其他目录或 Windows 时通常不需要改路径。
 
 手机端连接示例：
 
@@ -91,10 +92,11 @@ npm run build
 bin/install-launchd.sh
 ```
 
-运行配置保存在：
+运行配置保存在项目目录内，并在安装时同步到运行目录：
 
 ```text
-~/.codex-mobile-gateway.env
+server/.env
+~/Library/Application Support/CodexMobileGateway/runtime/.env
 ```
 
 日志位置：
@@ -116,8 +118,8 @@ bin/uninstall-launchd.sh
 先准备配置文件：
 
 ```powershell
-Copy-Item server\.env.example $HOME\.codex-mobile-gateway.env
-notepad $HOME\.codex-mobile-gateway.env
+Copy-Item server\.env.example server\.env
+notepad server\.env
 ```
 
 安装计划任务并启动：
