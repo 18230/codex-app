@@ -21,7 +21,13 @@ import (
 type eventSink func(string, any)
 
 type clientState struct {
+	conn       *websocket.Conn
 	lastSeenAt time.Time
+	send       chan JSONObject
+	done       chan struct{}
+	closeOnce  sync.Once
+	mu         sync.Mutex
+	closed     bool
 }
 
 // Gateway 负责本地 HTTP/WebSocket 服务、Codex app-server 转发和线程状态。
@@ -47,6 +53,57 @@ func NewGateway(store *ConfigStore) *Gateway {
 	}
 }
 
+// newClientState 创建单个手机端连接的发送队列，保证同一 WebSocket 只有一个写协程。
+func newClientState(conn *websocket.Conn) *clientState {
+	return &clientState{
+		conn:       conn,
+		lastSeenAt: time.Now(),
+		send:       make(chan JSONObject, 128),
+		done:       make(chan struct{}),
+	}
+}
+
+// sendJSON 将消息放入发送队列，避免请求响应和广播并发写同一个连接。
+func (c *clientState) sendJSON(message JSONObject) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	select {
+	case c.send <- message:
+		return true
+	default:
+		return false
+	}
+}
+
+// close 关闭连接和写协程；调用方负责从 Gateway.clients 中移除。
+func (c *clientState) close() {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		close(c.done)
+		c.mu.Unlock()
+		_ = c.conn.Close()
+	})
+}
+
+// writeLoop 串行写出所有业务消息。
+func (c *clientState) writeLoop() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case message := <-c.send:
+			if err := c.conn.WriteJSON(message); err != nil {
+				c.close()
+				return
+			}
+		}
+	}
+}
+
 // SetEventSink 设置桌面前端事件推送器。
 func (g *Gateway) SetEventSink(sink eventSink) {
 	g.mu.Lock()
@@ -66,6 +123,11 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 
 	cfg, err := g.store.Load()
 	if err != nil {
+		return g.Status(), err
+	}
+	cfg, err = ValidateConfigTargets(cfg)
+	if err != nil {
+		g.setError(err)
 		return g.Status(), err
 	}
 	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
@@ -158,8 +220,8 @@ func (g *Gateway) Stop() error {
 	g.mu.Lock()
 	server := g.server
 	codex := g.codex
-	clients := make([]*websocket.Conn, 0, len(g.clients))
-	for client := range g.clients {
+	clients := make([]*clientState, 0, len(g.clients))
+	for _, client := range g.clients {
 		clients = append(clients, client)
 	}
 	g.server = nil
@@ -169,7 +231,7 @@ func (g *Gateway) Stop() error {
 	g.mu.Unlock()
 
 	for _, client := range clients {
-		_ = client.Close()
+		client.close()
 	}
 	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -213,13 +275,14 @@ func (g *Gateway) BindThread(threadID string) (GatewayStatus, error) {
 		return g.Status(), fmt.Errorf("网关尚未启动")
 	}
 
-	if _, err := codex.Request(context.Background(), "thread/resume", JSONObject{
+	result, err := codex.Request(context.Background(), "thread/resume", JSONObject{
 		"threadId":       threadID,
 		"cwd":            cwd,
 		"approvalPolicy": "never",
 		"sandbox":        "danger-full-access",
 		"excludeTurns":   true,
-	}, 120*time.Second); err != nil {
+	}, 120*time.Second)
+	if err != nil {
 		g.setError(err)
 		return g.Status(), err
 	}
@@ -228,8 +291,12 @@ func (g *Gateway) BindThread(threadID string) (GatewayStatus, error) {
 	g.mu.Lock()
 	g.cfg = cfg
 	g.currentID = threadID
+	g.currentCWD = cwd
+	g.activeTurn = ""
 	g.mu.Unlock()
 	g.emit("gateway:status", g.Status())
+	g.broadcastBoundThread(threadID, readThread(result))
+	g.notifyThreadsChanged("thread-bound")
 	return g.Status(), nil
 }
 
@@ -333,18 +400,20 @@ func (g *Gateway) handleWebSocket(response http.ResponseWriter, request *http.Re
 
 // attachClient 绑定手机端连接生命周期。
 func (g *Gateway) attachClient(conn *websocket.Conn) {
+	client := newClientState(conn)
 	g.mu.Lock()
-	g.clients[conn] = &clientState{lastSeenAt: time.Now()}
+	g.clients[conn] = client
 	ready := JSONObject{"type": "ready", "threadId": g.currentID, "cwd": g.currentCWD}
 	g.mu.Unlock()
-	_ = conn.WriteJSON(ready)
+	go client.writeLoop()
+	client.sendJSON(ready)
 
 	go func() {
 		defer func() {
 			g.mu.Lock()
 			delete(g.clients, conn)
 			g.mu.Unlock()
-			_ = conn.Close()
+			client.close()
 		}()
 		for {
 			var message JSONObject
@@ -356,15 +425,15 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 				state.lastSeenAt = time.Now()
 			}
 			g.mu.Unlock()
-			if err := g.handleClientMessage(conn, message); err != nil {
-				_ = conn.WriteJSON(JSONObject{"type": "response", "ok": false, "error": err.Error()})
+			if err := g.handleClientMessage(client, message); err != nil {
+				client.sendJSON(JSONObject{"type": "response", "ok": false, "error": redactSecrets(err)})
 			}
 		}
 	}()
 }
 
 // handleClientMessage 处理 Android 客户端协议。
-func (g *Gateway) handleClientMessage(conn *websocket.Conn, message JSONObject) error {
+func (g *Gateway) handleClientMessage(client *clientState, message JSONObject) error {
 	messageType := stringField(message, "type")
 	requestID := stringField(message, "id")
 
@@ -373,52 +442,53 @@ func (g *Gateway) handleClientMessage(conn *websocket.Conn, message JSONObject) 
 		g.mu.Lock()
 		threadID := g.currentID
 		g.mu.Unlock()
-		return conn.WriteJSON(JSONObject{"type": "pong", "timestamp": time.Now().UnixMilli(), "threadId": threadID})
+		client.sendJSON(JSONObject{"type": "pong", "timestamp": time.Now().UnixMilli(), "threadId": threadID})
+		return nil
 	case "health.check":
 		status := g.Status()
-		_ = conn.WriteJSON(JSONObject{"type": "health", "report": status})
-		return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": status})
+		client.sendJSON(JSONObject{"type": "health", "report": status})
+		client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": status})
+		return nil
 	case "workspace.check":
-		cwd, err := validateWorkspacePath(stringField(message, "cwd"))
+		cwd, err := g.resolveClientWorkspace(stringField(message, "cwd"))
 		if err != nil {
-			_ = conn.WriteJSON(JSONObject{"type": "workspace", "ok": false, "error": err.Error()})
-			return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": false, "error": err.Error()})
+			client.sendJSON(JSONObject{"type": "workspace", "ok": false, "error": err.Error()})
+			client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": false, "error": err.Error()})
+			return nil
 		}
-		_ = conn.WriteJSON(JSONObject{"type": "workspace", "ok": true, "cwd": cwd})
-		return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"cwd": cwd}})
+		client.sendJSON(JSONObject{"type": "workspace", "ok": true, "cwd": cwd})
+		client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"cwd": cwd}})
+		return nil
 	case "thread.list":
-		return g.clientThreadList(conn, requestID, stringField(message, "cwd"))
+		return g.clientThreadList(client, requestID, stringField(message, "cwd"))
 	case "thread.read":
-		return g.clientThreadRead(conn, requestID)
+		return g.clientThreadRead(client, requestID)
 	case "thread.start":
-		return g.clientThreadStart(conn, requestID, stringField(message, "cwd"))
+		return g.clientThreadStart(client, requestID, stringField(message, "cwd"))
 	case "thread.resume":
 		threadID := stringField(message, "threadId")
 		cwd := stringField(message, "cwd")
-		return g.clientThreadResume(conn, requestID, threadID, cwd)
+		return g.clientThreadResume(client, requestID, threadID, cwd)
 	case "turn.start":
-		return g.clientTurnStart(conn, requestID, message)
+		return g.clientTurnStart(client, requestID, message)
 	case "turn.steer":
-		return g.clientTurnSteer(conn, requestID, message)
+		return g.clientTurnSteer(client, requestID, message)
 	case "turn.interrupt":
-		return g.clientTurnInterrupt(conn, requestID, message)
+		return g.clientTurnInterrupt(client, requestID, message)
 	default:
 		return fmt.Errorf("不支持的消息类型: %s", messageType)
 	}
 }
 
 // clientThreadList 推送线程列表。
-func (g *Gateway) clientThreadList(conn *websocket.Conn, requestID string, cwd string) error {
+func (g *Gateway) clientThreadList(client *clientState, requestID string, cwd string) error {
 	g.mu.Lock()
 	codex := g.codex
-	if cwd == "" {
-		cwd = g.currentCWD
-	}
 	g.mu.Unlock()
 	if codex == nil {
 		return fmt.Errorf("网关尚未启动")
 	}
-	resolved, err := validateWorkspacePath(cwd)
+	resolved, err := g.resolveClientWorkspace(cwd)
 	if err != nil {
 		return err
 	}
@@ -426,32 +496,31 @@ func (g *Gateway) clientThreadList(conn *websocket.Conn, requestID string, cwd s
 	if err != nil {
 		return err
 	}
-	_ = conn.WriteJSON(JSONObject{"type": "threads", "threads": threads})
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"data": threads}})
+	client.sendJSON(JSONObject{"type": "threads", "threads": threads})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"data": threads}})
+	return nil
 }
 
 // clientThreadRead 推送当前线程历史。
-func (g *Gateway) clientThreadRead(conn *websocket.Conn, requestID string) error {
+func (g *Gateway) clientThreadRead(client *clientState, requestID string) error {
 	g.mu.Lock()
 	threadID := g.currentID
 	g.mu.Unlock()
 	lines := g.historyLinesFromSessionFile(threadID)
-	_ = conn.WriteJSON(JSONObject{"type": "history", "threadId": threadID, "lines": lines})
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"thread": JSONObject{"id": threadID}}})
+	client.sendJSON(JSONObject{"type": "history", "threadId": threadID, "lines": lines})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": JSONObject{"thread": JSONObject{"id": threadID}}})
+	return nil
 }
 
 // clientThreadStart 创建新线程。
-func (g *Gateway) clientThreadStart(conn *websocket.Conn, requestID string, cwd string) error {
+func (g *Gateway) clientThreadStart(client *clientState, requestID string, cwd string) error {
 	g.mu.Lock()
 	codex := g.codex
-	if cwd == "" {
-		cwd = g.currentCWD
-	}
 	g.mu.Unlock()
 	if codex == nil {
 		return fmt.Errorf("网关尚未启动")
 	}
-	resolved, err := validateWorkspacePath(cwd)
+	resolved, err := g.resolveClientWorkspace(cwd)
 	if err != nil {
 		return err
 	}
@@ -474,20 +543,18 @@ func (g *Gateway) clientThreadStart(conn *websocket.Conn, requestID string, cwd 
 	g.mu.Unlock()
 	g.emit("gateway:status", g.Status())
 	g.notifyThreadsChanged("thread-started")
-	_ = conn.WriteJSON(JSONObject{"type": "thread", "thread": thread})
-	_ = conn.WriteJSON(JSONObject{"type": "history", "threadId": threadID, "lines": []HistoryLine{}})
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	client.sendJSON(JSONObject{"type": "thread", "thread": thread})
+	client.sendJSON(JSONObject{"type": "history", "threadId": threadID, "lines": []HistoryLine{}})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	return nil
 }
 
 // clientThreadResume 恢复指定线程。
-func (g *Gateway) clientThreadResume(conn *websocket.Conn, requestID string, threadID string, cwd string) error {
+func (g *Gateway) clientThreadResume(client *clientState, requestID string, threadID string, cwd string) error {
 	g.mu.Lock()
 	codex := g.codex
 	if threadID == "" {
 		threadID = g.currentID
-	}
-	if cwd == "" {
-		cwd = g.currentCWD
 	}
 	g.mu.Unlock()
 	if codex == nil {
@@ -496,7 +563,7 @@ func (g *Gateway) clientThreadResume(conn *websocket.Conn, requestID string, thr
 	if threadID == "" {
 		return fmt.Errorf("当前没有可恢复的会话，请先新建或绑定一个会话")
 	}
-	resolved, err := validateWorkspacePath(cwd)
+	resolved, err := g.resolveClientWorkspace(cwd)
 	if err != nil {
 		return err
 	}
@@ -517,13 +584,14 @@ func (g *Gateway) clientThreadResume(conn *websocket.Conn, requestID string, thr
 	g.mu.Unlock()
 	g.emit("gateway:status", g.Status())
 	g.notifyThreadsChanged("thread-resumed")
-	_ = conn.WriteJSON(JSONObject{"type": "thread", "thread": readThread(result)})
-	_ = conn.WriteJSON(JSONObject{"type": "history", "threadId": threadID, "lines": g.historyLinesFromSessionFile(threadID)})
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	client.sendJSON(JSONObject{"type": "thread", "thread": readThread(result)})
+	client.sendJSON(JSONObject{"type": "history", "threadId": threadID, "lines": g.historyLinesFromSessionFile(threadID)})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	return nil
 }
 
 // clientTurnStart 开始一轮 Codex 对话。
-func (g *Gateway) clientTurnStart(conn *websocket.Conn, requestID string, message JSONObject) error {
+func (g *Gateway) clientTurnStart(client *clientState, requestID string, message JSONObject) error {
 	text := strings.TrimSpace(stringField(message, "text"))
 	if text == "" {
 		return fmt.Errorf("消息内容不能为空")
@@ -535,9 +603,6 @@ func (g *Gateway) clientTurnStart(conn *websocket.Conn, requestID string, messag
 		threadID = g.currentID
 	}
 	cwd := stringField(message, "cwd")
-	if cwd == "" {
-		cwd = g.currentCWD
-	}
 	activeTurn := g.activeTurn
 	g.mu.Unlock()
 	if activeTurn != "" {
@@ -546,7 +611,7 @@ func (g *Gateway) clientTurnStart(conn *websocket.Conn, requestID string, messag
 	if codex == nil {
 		return fmt.Errorf("网关尚未启动")
 	}
-	resolved, err := validateWorkspacePath(cwd)
+	resolved, err := g.resolveClientWorkspace(cwd)
 	if err != nil {
 		return err
 	}
@@ -566,11 +631,12 @@ func (g *Gateway) clientTurnStart(conn *websocket.Conn, requestID string, messag
 	g.currentCWD = resolved
 	g.activeTurn = turnID
 	g.mu.Unlock()
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	return nil
 }
 
 // clientTurnSteer 向正在执行的 turn 追加指令。
-func (g *Gateway) clientTurnSteer(conn *websocket.Conn, requestID string, message JSONObject) error {
+func (g *Gateway) clientTurnSteer(client *clientState, requestID string, message JSONObject) error {
 	text := strings.TrimSpace(stringField(message, "text"))
 	if text == "" {
 		return fmt.Errorf("追加指令不能为空")
@@ -593,11 +659,12 @@ func (g *Gateway) clientTurnSteer(conn *websocket.Conn, requestID string, messag
 	if err != nil {
 		return err
 	}
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	return nil
 }
 
 // clientTurnInterrupt 停止当前 turn。
-func (g *Gateway) clientTurnInterrupt(conn *websocket.Conn, requestID string, message JSONObject) error {
+func (g *Gateway) clientTurnInterrupt(client *clientState, requestID string, message JSONObject) error {
 	g.mu.Lock()
 	codex := g.codex
 	threadID := stringField(message, "threadId")
@@ -622,7 +689,8 @@ func (g *Gateway) clientTurnInterrupt(conn *websocket.Conn, requestID string, me
 	g.mu.Lock()
 	g.activeTurn = ""
 	g.mu.Unlock()
-	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	client.sendJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
+	return nil
 }
 
 // handleCodexNotification 把 app-server 通知映射为 Android 协议事件。
@@ -692,7 +760,7 @@ func (g *Gateway) clientHeartbeat() {
 		for client, state := range g.clients {
 			if now.Sub(state.lastSeenAt) > time.Duration(defaultIdleTimeoutMs)*time.Millisecond {
 				delete(g.clients, client)
-				_ = client.Close()
+				state.close()
 				continue
 			}
 			_ = client.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
@@ -704,14 +772,55 @@ func (g *Gateway) clientHeartbeat() {
 // broadcast 向所有手机端连接发送事件。
 func (g *Gateway) broadcast(message JSONObject) {
 	g.mu.Lock()
-	clients := make([]*websocket.Conn, 0, len(g.clients))
-	for client := range g.clients {
+	clients := make([]*clientState, 0, len(g.clients))
+	for _, client := range g.clients {
 		clients = append(clients, client)
 	}
 	g.mu.Unlock()
 	for _, client := range clients {
-		_ = client.WriteJSON(message)
+		client.sendJSON(message)
 	}
+}
+
+// broadcastBoundThread 把桌面端绑定的会话同步给所有已连接手机端。
+func (g *Gateway) broadcastBoundThread(threadID string, thread JSONObject) {
+	if thread == nil {
+		thread = JSONObject{}
+	}
+	if stringField(thread, "id") == "" {
+		thread["id"] = threadID
+	}
+	g.mu.Lock()
+	cwd := g.currentCWD
+	g.mu.Unlock()
+	if stringField(thread, "cwd") == "" && cwd != "" {
+		thread["cwd"] = cwd
+	}
+	g.broadcast(JSONObject{"type": "thread", "thread": thread})
+	g.broadcast(JSONObject{"type": "history", "threadId": threadID, "lines": g.historyLinesFromSessionFile(threadID)})
+}
+
+// resolveClientWorkspace 限制手机端只能使用桌面网关配置的工作目录。
+func (g *Gateway) resolveClientWorkspace(input string) (string, error) {
+	input = strings.TrimSpace(input)
+	g.mu.Lock()
+	allowed := firstNonEmpty(g.currentCWD, g.cfg.Workspace)
+	g.mu.Unlock()
+	resolvedAllowed, err := validateWorkspacePath(allowed)
+	if err != nil {
+		return "", err
+	}
+	if input == "" {
+		return resolvedAllowed, nil
+	}
+	resolvedInput, err := validateWorkspacePath(input)
+	if err != nil {
+		return "", err
+	}
+	if resolvedInput != resolvedAllowed {
+		return "", fmt.Errorf("手机端只能使用桌面网关配置的工作目录")
+	}
+	return resolvedInput, nil
 }
 
 // validToken 使用固定时间比较校验手机端 token。
@@ -734,10 +843,6 @@ func (g *Gateway) statusLocked() GatewayStatus {
 	if g.codex != nil && g.codex.IsConnected() {
 		appServer = "connected"
 	}
-	connectionURL := ""
-	if g.cfg.Token != "" {
-		connectionURL = fmt.Sprintf("%s?token=%s", strings.TrimRight(g.cfg.LastConnectionBaseURL, "/"), g.cfg.Token)
-	}
 	return GatewayStatus{
 		Running:         running,
 		Gateway:         mapBool(running, "running", "stopped"),
@@ -748,7 +853,6 @@ func (g *Gateway) statusLocked() GatewayStatus {
 		ActiveTurnID:    g.activeTurn,
 		Error:           g.lastError,
 		ConfigPath:      g.store.Path(),
-		ConnectionURL:   connectionURL,
 		Timestamp:       time.Now().UnixMilli(),
 	}
 }

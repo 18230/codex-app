@@ -86,6 +86,11 @@ input:focus {
   color: #57606a;
 }
 
+.topbar-log {
+  min-height: 20px;
+  margin-top: 8px !important;
+}
+
 .topbar p.success {
   color: #116329;
 }
@@ -104,6 +109,30 @@ input:focus {
 .status.ok {
   color: #116329;
   border-color: #8ddb8c;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #d8dee4;
+}
+
+.tab {
+  border-color: transparent;
+  border-radius: 8px;
+  color: #57606a;
+}
+
+.tab.active {
+  border-color: #d0d7de;
+  background: #f6f8fa;
+  color: #1f2328;
+  font-weight: 600;
+}
+
+.tab-panel {
+  border-top: 0;
 }
 
 .panel {

@@ -33,6 +33,5 @@ type GatewayStatus struct {
 	ActiveTurnID    string `json:"activeTurnId"`
 	Error           string `json:"error"`
 	ConfigPath      string `json:"configPath"`
-	ConnectionURL   string `json:"connectionUrl"`
 	Timestamp       int64  `json:"timestamp"`
 }

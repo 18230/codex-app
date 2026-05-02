@@ -225,13 +225,6 @@ export class GatewayStatus {
              */
             this["configPath"] = "";
         }
-        if (!("connectionUrl" in $$source)) {
-            /**
-             * @member
-             * @type {string}
-             */
-            this["connectionUrl"] = "";
-        }
         if (!("timestamp" in $$source)) {
             /**
              * @member

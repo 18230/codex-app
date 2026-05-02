@@ -38,21 +38,31 @@
 ## 功能特性
 
 - 手机端连接本机 Codex Gateway，复用 Codex 线程能力。
-- 支持新建会话、切换会话、历史同步和实时回复；手机端新建或对话完成后会自动刷新会话列表。
+- 支持新建会话、切换会话、历史同步和实时回复；手机端新建、桌面端绑定或对话完成后会自动刷新会话列表。
 - 提供配置页、健康检查、目录检查和诊断日志。
-- 桌面版 `CodexMobileGateway` 可在界面中配置工作目录、token、Codex 路径并选择线程绑定。
+- 桌面版 `CodexMobileGateway` 可在界面中配置工作目录、token、Codex 路径并通过会话列表绑定当前会话。
 - 桌面版使用 Wails v3 原生 System Tray API，关闭窗口后仍可通过托盘菜单显示、启动、停止或退出网关。
+- 桌面网关状态和健康检查不会回显完整连接地址或 token；手机端只能使用桌面网关配置的工作目录。
 - 连接地址和 token 只保存在手机本地加密存储，不写入仓库。
 
 ## 下载
 
-发布包在 GitHub Releases 中提供：
+最新版本：`v0.2.1`。发布包在 GitHub Releases 中提供：
 
-- `CodexMobileGateway.dmg`：macOS Apple Silicon 桌面网关。
-- `CodexMobileGateway.exe`：Windows x86_64 便携版桌面网关。
-- `codex-app.apk`：Android 手机端安装包。
+- `CodexMobileGateway-0.2.1-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
+- `CodexMobileGateway-0.2.1-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
+- `codex-app-0.2.1.apk`：Android 手机端安装包。
 
 桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
+
+## v0.2.1 更新
+
+- 桌面端配置页改为“基础配置 / 会话列表”选项卡，诊断消息上移到标题区。
+- 保存和启动网关前会检查工作目录和 Codex 可执行文件是否存在。
+- 桌面端绑定会话后会同步推送到手机端，手机端会自动切换并刷新历史。
+- 手机端会话列表统一命名为“会话列表”，选中态改为浅灰底色。
+- 手机端发送新消息后增加轻量“Codex 正在思考”提示。
+- 网关状态、健康检查和日志不再回显完整连接地址或 token。
 
 ## 桌面网关
 
@@ -73,6 +83,8 @@ cd desktop
 
 ```text
 desktop/bin/CodexMobileGateway.dmg
+desktop/bin/CodexMobileGateway.exe
+android/app/build/outputs/apk/debug/codex-app.apk
 ```
 
 Windows 便携版通过 GitHub Actions 构建，产物名为 `CodexMobileGateway.exe`。第一版未做代码签名，系统可能提示安全确认。

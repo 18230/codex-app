@@ -21,6 +21,7 @@ const state = {
   draft: null,
   status: {},
   threads: [],
+  activeTab: 'config',
   message: '',
   messageKind: '',
   refreshTimer: null
@@ -77,93 +78,100 @@ function render() {
         <div>
           <h1>CodexMobileGateway</h1>
           <p class="${topbarMessageClass}">${statusText()}</p>
+          ${state.message ? `<p class="topbar-log ${messageClass}">${escapeHtml(state.message)}</p>` : ''}
         </div>
         <div class="status ${status.running ? 'ok' : ''}">${status.running ? '运行中' : '已停止'}</div>
       </header>
 
-      <section class="panel">
-        <div class="section-title">配置</div>
-        <label>
-          <span>工作目录</span>
-          <div class="inline">
-            <input id="workspace" value="${escapeHtml(cfg.workspace || '')}" />
-            <button id="chooseWorkspace">选择</button>
-          </div>
-        </label>
-        <label>
-          <span>Token</span>
-          <div class="inline">
-            <input id="token" value="${escapeHtml(cfg.token || '')}" />
-            <button id="generateToken">生成</button>
-          </div>
-          <small>当前显示：${maskToken(cfg.token)}</small>
-        </label>
-        <label>
-          <span>Codex 可执行文件</span>
-          <div class="inline">
-            <input id="codexBinary" value="${escapeHtml(cfg.codexBinary || 'codex')}" />
-            <button id="detectCodex">自动查找</button>
-          </div>
-        </label>
-        <div class="grid two">
-          <label>
-            <span>监听地址</span>
-            <input id="host" value="${escapeHtml(cfg.host || '127.0.0.1')}" />
-          </label>
-          <label>
-            <span>端口</span>
-            <input id="port" type="number" min="1" max="65535" value="${cfg.port || 8000}" />
-          </label>
-        </div>
-        <label>
-          <span>公网连接地址</span>
-          <div class="inline">
-            <input id="baseUrl" value="${escapeHtml(cfg.lastConnectionBaseUrl || 'https://xxx.com')}" />
-            <button id="copyUrl">复制连接</button>
-          </div>
-        </label>
-        <label>
-          <span>WSS 连接地址</span>
-          <div class="inline">
-            <input id="wssUrl" value="${escapeHtml(wsUrl)}" readonly />
-            <button id="copyWssUrl" class="icon-button" title="复制 WSS 连接地址" aria-label="复制 WSS 连接地址">
-              ${copyIcon()}
-            </button>
-          </div>
-          <small>只需要把这个地址填写入手机即可。</small>
-        </label>
-        <div class="actions">
-          <button id="save">保存配置</button>
-          <button id="start" ${status.running ? 'disabled' : ''}>启动网关</button>
-          <button id="stop" ${status.running ? '' : 'disabled'}>停止网关</button>
-          <button id="health">健康检查</button>
-        </div>
-      </section>
+      <nav class="tabs" role="tablist" aria-label="网关设置">
+        <button id="tabConfig" class="tab ${state.activeTab === 'config' ? 'active' : ''}" role="tab" aria-selected="${state.activeTab === 'config'}">基础配置</button>
+        <button id="tabThreads" class="tab ${state.activeTab === 'threads' ? 'active' : ''}" role="tab" aria-selected="${state.activeTab === 'threads'}">会话列表</button>
+      </nav>
 
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <div class="section-title">会话列表</div>
-            <p>从当前工作目录的会话列表中选择一个线程绑定。</p>
-          </div>
-          <button id="refreshThreads" ${status.running ? '' : 'disabled'}>刷新线程</button>
-        </div>
-        <div class="thread-list">
-          ${state.threads.length === 0 ? '<div class="empty">暂无线程，启动网关后刷新。</div>' : state.threads.map(thread => `
-            <div class="thread ${thread.id === status.threadId ? 'active' : ''}">
-              <div class="thread-main">
-                <strong>${escapeHtml(thread.name || thread.preview || '无标题会话')}</strong>
-                <span>${escapeHtml(thread.id)}${thread.cwd ? ` · ${escapeHtml(thread.cwd)}` : ''}</span>
-              </div>
-              <div class="thread-action">
-                ${thread.id === status.threadId
-                  ? '<span class="bound-label">已绑定</span>'
-                  : `<button class="bind-thread" data-thread-id="${escapeHtml(thread.id)}">绑定</button>`}
-              </div>
+      ${state.activeTab === 'config' ? `
+        <section class="panel tab-panel">
+          <label>
+            <span>工作目录</span>
+            <div class="inline">
+              <input id="workspace" value="${escapeHtml(cfg.workspace || '')}" />
+              <button id="chooseWorkspace">选择</button>
             </div>
-          `).join('')}
-        </div>
-      </section>
+          </label>
+          <label>
+            <span>Token</span>
+            <div class="inline">
+              <input id="token" value="${escapeHtml(cfg.token || '')}" />
+              <button id="generateToken">生成</button>
+            </div>
+            <small>当前显示：${maskToken(cfg.token)}</small>
+          </label>
+          <label>
+            <span>Codex 可执行文件</span>
+            <div class="inline">
+              <input id="codexBinary" value="${escapeHtml(cfg.codexBinary || 'codex')}" />
+              <button id="detectCodex">自动查找</button>
+            </div>
+          </label>
+          <div class="grid two">
+            <label>
+              <span>监听地址</span>
+              <input id="host" value="${escapeHtml(cfg.host || '127.0.0.1')}" />
+            </label>
+            <label>
+              <span>端口</span>
+              <input id="port" type="number" min="1" max="65535" value="${cfg.port || 8000}" />
+            </label>
+          </div>
+          <label>
+            <span>公网连接地址</span>
+            <div class="inline">
+              <input id="baseUrl" value="${escapeHtml(cfg.lastConnectionBaseUrl || 'https://xxx.com')}" />
+              <button id="copyUrl">复制连接</button>
+            </div>
+          </label>
+          <label>
+            <span>WSS 连接地址</span>
+            <div class="inline">
+              <input id="wssUrl" value="${escapeHtml(wsUrl)}" readonly />
+              <button id="copyWssUrl" class="icon-button" title="复制 WSS 连接地址" aria-label="复制 WSS 连接地址">
+                ${copyIcon()}
+              </button>
+            </div>
+            <small>只需要把这个地址填写入手机即可。</small>
+          </label>
+          <div class="actions">
+            <button id="save">保存配置</button>
+            <button id="start" ${status.running ? 'disabled' : ''}>启动网关</button>
+            <button id="stop" ${status.running ? '' : 'disabled'}>停止网关</button>
+            <button id="health">健康检查</button>
+          </div>
+        </section>
+      ` : `
+        <section class="panel tab-panel">
+          <div class="section-heading">
+            <div>
+              <div class="section-title">会话列表</div>
+              <p>从当前工作目录的会话列表中选择一个线程绑定。</p>
+            </div>
+            <button id="refreshThreads" ${status.running ? '' : 'disabled'}>刷新线程</button>
+          </div>
+          <div class="thread-list">
+            ${state.threads.length === 0 ? '<div class="empty">暂无线程，启动网关后刷新。</div>' : state.threads.map(thread => `
+              <div class="thread ${thread.id === status.threadId ? 'active' : ''}">
+                <div class="thread-main">
+                  <strong>${escapeHtml(thread.name || thread.preview || '无标题会话')}</strong>
+                  <span>${escapeHtml(thread.id)}${thread.cwd ? ` · ${escapeHtml(thread.cwd)}` : ''}</span>
+                </div>
+                <div class="thread-action">
+                  ${thread.id === status.threadId
+                    ? '<span class="bound-label">已绑定</span>'
+                    : `<button class="bind-thread" data-thread-id="${escapeHtml(thread.id)}">绑定</button>`}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </section>
+      `}
 
       <section class="panel diagnostics">
         <div class="section-title">诊断</div>
@@ -174,7 +182,6 @@ function render() {
           <dt>工作目录</dt><dd>${escapeHtml(status.cwd || cfg.workspace || '')}</dd>
           <dt>当前线程</dt><dd>${escapeHtml(status.threadId || '未绑定')}</dd>
         </dl>
-        <div class="message ${messageClass}">${escapeHtml(state.message)}</div>
       </section>
     </main>
   `;
@@ -182,6 +189,8 @@ function render() {
 }
 
 function bindEvents() {
+  document.querySelector('#tabConfig')?.addEventListener('click', () => switchTab('config'));
+  document.querySelector('#tabThreads')?.addEventListener('click', () => switchTab('threads'));
   document.querySelectorAll('input').forEach(input => {
     input.addEventListener('input', syncDraftFromForm);
     input.addEventListener('change', syncDraftFromForm);
@@ -229,6 +238,15 @@ function bindEvents() {
       await refreshThreads();
     });
   });
+}
+
+async function switchTab(tab) {
+  syncDraftFromForm();
+  state.activeTab = tab;
+  if (tab === 'threads' && state.status?.running) {
+    await refreshThreadsSilently();
+  }
+  render();
 }
 
 function collectConfig() {
@@ -289,6 +307,10 @@ async function runAction(label, action) {
 async function startGateway() {
   try {
     syncDraftFromForm();
+    const snapshot = await SaveConfig(collectConfig());
+    state.config = snapshot.config;
+    state.draft = null;
+    state.status = snapshot.status;
     state.status = await StartGateway();
     state.messageKind = state.status.error ? 'error' : 'success';
     if (state.status.error) {

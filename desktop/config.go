@@ -178,6 +178,21 @@ func NormalizeConfig(cfg AppConfig) (AppConfig, error) {
 	return cfg, nil
 }
 
+// ValidateConfigTargets 确认启动和保存依赖的本地路径都真实可用。
+func ValidateConfigTargets(cfg AppConfig) (AppConfig, error) {
+	workspace, err := validateWorkspacePath(cfg.Workspace)
+	if err != nil {
+		return AppConfig{}, err
+	}
+	cfg.Workspace = workspace
+	resolvedCodex, err := ResolveCodexBinary(cfg.CodexBinary)
+	if err != nil {
+		return AppConfig{}, fmt.Errorf("Codex 可执行文件不可用: %w", err)
+	}
+	cfg.CodexBinary = resolvedCodex
+	return cfg, nil
+}
+
 // defaultCodexBinary 返回当前机器可用的 Codex 可执行文件路径，避免 GUI 应用拿不到终端 PATH。
 func defaultCodexBinary() string {
 	if resolved, err := ResolveCodexBinary(defaultCodexBinaryValue); err == nil {

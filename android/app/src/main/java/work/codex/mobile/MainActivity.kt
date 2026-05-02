@@ -404,6 +404,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
     var threadTitle by remember { mutableStateOf("无标题会话") }
     var draft by remember { mutableStateOf("") }
     var activeTurnId by remember { mutableStateOf<String?>(null) }
+    var isThinking by remember { mutableStateOf(false) }
     var pendingThreadSwitchId by remember { mutableStateOf<String?>(null) }
     var client by remember { mutableStateOf<GatewayClient?>(null) }
     var autoConnectDone by remember { mutableStateOf(false) }
@@ -455,6 +456,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
      * 展示服务端错误，并为空错误提供稳定兜底，避免界面出现空白错误行。
      */
     fun appendGatewayError(rawMessage: String) {
+        isThinking = false
         val message = classifyGatewayError(rawMessage)
         setAppStatus(errorStatusLabel(message), log = true)
         addDiagnostic("错误", message)
@@ -559,18 +561,28 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                 setAppStatus("正在执行", log = true)
             }
             "turn.completed" -> {
+                isThinking = false
                 activeTurnId = null
                 setAppStatus("执行完成", log = true)
                 requestThreadList()
                 requestThreadList(1200L)
             }
-            "delta" -> appendOutput(
-                LineKind.Assistant,
-                event.optString("text"),
-                event.optString("itemId"),
-            )
-            "command.delta" -> setAppStatus("正在执行命令")
-            "plan.delta" -> setAppStatus("正在规划")
+            "delta" -> {
+                isThinking = false
+                appendOutput(
+                    LineKind.Assistant,
+                    event.optString("text"),
+                    event.optString("itemId"),
+                )
+            }
+            "command.delta" -> {
+                isThinking = false
+                setAppStatus("正在执行命令")
+            }
+            "plan.delta" -> {
+                isThinking = false
+                setAppStatus("正在规划")
+            }
             "plan.updated" -> setAppStatus("计划已更新")
             "file.patch" -> setAppStatus("文件变更已更新")
             "status" -> setAppStatus("Codex 状态更新")
@@ -600,10 +612,14 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             }
             "response" -> {
                 if (!event.optBoolean("ok", true)) {
+                    isThinking = false
                     appendGatewayError(event.optString("error"))
                 }
             }
-            "error" -> appendGatewayError(event.optString("message"))
+            "error" -> {
+                isThinking = false
+                appendGatewayError(event.optString("message"))
+            }
         }
     }
 
@@ -638,13 +654,16 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             },
             onEvent = ::handleEvent,
             onClosed = { reason ->
+                isThinking = false
                 setAppStatus(reason, log = true)
             },
             onReconnecting = { reason, delayMs ->
+                isThinking = false
                 setAppStatus("重连中：${delayMs / 1000} 秒后重试", log = true)
                 addDiagnostic("连接", "连接异常：$reason")
             },
             onError = { message ->
+                isThinking = false
                 if (status != "重连中") setAppStatus("连接异常", log = true)
                 addDiagnostic("连接", message)
                 appendOutput(LineKind.Error, message)
@@ -753,11 +772,11 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                             onClick = { scope.launch { drawerState.open() } },
                             modifier = Modifier.size(36.dp),
                         ) {
-                            Icon(
-                                Icons.Filled.Menu,
-                                contentDescription = "线程",
-                                modifier = Modifier.size(20.dp),
-                            )
+	                            Icon(
+	                                Icons.Filled.Menu,
+	                                contentDescription = "会话",
+	                                modifier = Modifier.size(20.dp),
+	                            )
                         }
                         Header(
                             title = threadTitle,
@@ -773,6 +792,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                 scrollSignal = scrollNonce,
                                 hasConnection = !savedUrl.value.isNullOrBlank(),
                                 status = status,
+                                isThinking = isThinking,
                                 onCopy = { copyText ->
                                     // 复制动作由气泡内部执行，这里保留扩展点。
                                     addDiagnostic("消息", "已复制 ${copyText.length} 个字符")
@@ -792,6 +812,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                 activeTurnId = activeTurnId,
                                 onDraftChange = { draft = it },
                                 onInterrupt = {
+                                    isThinking = false
                                     activeTurnId?.let {
                                         client?.send(JSONObject().put("type", "turn.interrupt").put("turnId", it))
                                     }
@@ -803,6 +824,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                     focusManager.clearFocus()
                                     appendOutput(LineKind.User, text)
                                     val payload = if (activeTurnId == null) {
+                                        isThinking = true
                                         JSONObject()
                                             .put("type", "turn.start")
                                             .put("text", text)
@@ -833,6 +855,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                             onDisconnect = {
                                 client?.close()
                                 client = null
+                                isThinking = false
                                 setAppStatus("已断开", log = true)
                             },
                             onClearConnection = ::clearSavedConnection,
@@ -1109,7 +1132,7 @@ private fun DiagnosticRow(entry: DiagnosticEntry) {
 }
 
 /**
- * 渲染线程列表，并提供一键切换当前 Codex thread。
+ * 渲染会话列表，并提供一键切换当前 Codex thread。
  */
 @Composable
 private fun ThreadListPanel(
@@ -1127,22 +1150,22 @@ private fun ThreadListPanel(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "最近",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
+	            Text(
+	                text = "会话列表",
+	                style = MaterialTheme.typography.titleMedium,
+	                fontWeight = FontWeight.SemiBold,
+	            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CompactActionButton(text = "新建", icon = Icons.Filled.Add, onClick = onCreate)
                 CompactActionButton(text = "刷新", onClick = onRefresh)
             }
         }
         if (threads.isEmpty()) {
-            Text(
-                text = "暂无线程列表",
-                color = Color(0xFF5A665F),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+	            Text(
+	                text = "暂无会话列表",
+	                color = Color(0xFF5A665F),
+	                style = MaterialTheme.typography.bodyMedium,
+	            )
         } else {
             LazyColumn(
                 modifier = Modifier
@@ -1163,7 +1186,7 @@ private fun ThreadListPanel(
 }
 
 /**
- * 渲染单个线程摘要行。
+ * 渲染单个会话摘要行。
  */
 @Composable
 private fun ThreadRow(
@@ -1172,16 +1195,11 @@ private fun ThreadRow(
     onSwitch: () -> Unit,
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onSwitch)
-            .background(Color.White, RoundedCornerShape(8.dp))
-            .border(
-                if (selected) 1.dp else 0.dp,
-                if (selected) Color(0xFF111111) else Color.Transparent,
-                RoundedCornerShape(8.dp),
-            )
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+	        modifier = Modifier
+	            .fillMaxWidth()
+	            .clickable(onClick = onSwitch)
+	            .background(if (selected) Color(0xFFF1F1F1) else Color.White, RoundedCornerShape(8.dp))
+	            .padding(horizontal = 10.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -1276,6 +1294,7 @@ private fun OutputList(
     scrollSignal: Int,
     hasConnection: Boolean,
     status: String,
+    isThinking: Boolean,
     onCopy: (String) -> Unit,
     onQuote: (String) -> Unit,
     onResend: (String) -> Unit,
@@ -1284,14 +1303,14 @@ private fun OutputList(
     val listState = rememberLazyListState()
     val lastLine = lines.lastOrNull()
 
-    LaunchedEffect(scrollSignal, lines.size, lastLine?.text) {
-        if (lines.isNotEmpty()) {
+    LaunchedEffect(scrollSignal, lines.size, lastLine?.text, isThinking) {
+        if (lines.isNotEmpty() || isThinking) {
             withFrameNanos { }
             listState.scrollToItem(lines.size)
         }
     }
 
-    if (lines.isEmpty()) {
+    if (lines.isEmpty() && !isThinking) {
         EmptyChatState(hasConnection = hasConnection, status = status, modifier = modifier)
     } else {
         LazyColumn(
@@ -1309,6 +1328,16 @@ private fun OutputList(
                     onQuote = onQuote,
                     onResend = onResend,
                 )
+            }
+            if (isThinking) {
+                item(key = "thinking") {
+                    OutputBubble(
+                        line = OutputLine(kind = LineKind.Assistant, text = "Codex 正在思考"),
+                        onCopy = onCopy,
+                        onQuote = onQuote,
+                        onResend = onResend,
+                    )
+                }
             }
             item(key = "bottom-anchor") {
                 Spacer(Modifier.height(1.dp))

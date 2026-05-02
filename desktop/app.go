@@ -77,6 +77,10 @@ func (a *App) SaveConfig(cfg AppConfig) (AppSnapshot, error) {
 	if err != nil {
 		return AppSnapshot{}, err
 	}
+	normalized, err = ValidateConfigTargets(normalized)
+	if err != nil {
+		return AppSnapshot{}, err
+	}
 	workspaceChanged := previous.Workspace != "" && previous.Workspace != normalized.Workspace
 	if workspaceChanged {
 		normalized.BoundThreadID = ""
