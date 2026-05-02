@@ -68,6 +68,12 @@ CODEX_BINARY=codex
 https://xxx.com?token=替换为你的长随机token
 ```
 
+## 内网穿透
+
+建议使用 Cloudflare Tunnel 把公网域名转发到本机网关 `127.0.0.1:8000`，这样手机端可以通过 HTTPS/WSS 连接本地 Codex Gateway。
+
+Cloudflare Tunnel 的桌面端常驻、域名映射和开机启动配置，可以参考项目：[cloudflare-tunnel-desktop](https://github.com/18230/cloudflare-tunnel-desktop)。
+
 ## 本地启动
 
 ```bash
