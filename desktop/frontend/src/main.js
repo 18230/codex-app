@@ -5,6 +5,7 @@ import {Events} from '@wailsio/runtime';
 const {
   BindThread,
   ConnectionURL,
+  DetectCodexBinary,
   GenerateToken,
   GetConfig,
   HealthCheck,
@@ -17,9 +18,12 @@ const {
 
 const state = {
   config: {},
+  draft: null,
   status: {},
   threads: [],
-  message: ''
+  message: '',
+  messageKind: '',
+  refreshTimer: null
 };
 
 const app = document.querySelector('#app');
@@ -37,15 +41,42 @@ function statusText() {
   return `运行中 · ${state.status.threadId ? state.status.threadId.slice(0, 8) : '未绑定'}`;
 }
 
+function websocketURL(cfg = {}) {
+  const token = String(cfg.token || '').trim();
+  let baseUrl = String(cfg.lastConnectionBaseUrl || 'https://xxx.com').trim();
+  if (!baseUrl) baseUrl = 'https://xxx.com';
+  if (!/^https?:\/\//i.test(baseUrl) && !/^wss?:\/\//i.test(baseUrl)) {
+    baseUrl = `https://${baseUrl}`;
+  }
+  try {
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === 'http:' || url.protocol === 'ws:' ? 'ws:' : 'wss:';
+    url.pathname = '/ws';
+    url.search = '';
+    if (token) url.searchParams.set('token', token);
+    return url.toString();
+  } catch {
+    const stripped = baseUrl.replace(/\/+$/, '');
+    const wsBase = stripped
+      .replace(/^https:\/\//i, 'wss://')
+      .replace(/^http:\/\//i, 'ws://')
+      .replace(/^wss?:\/\//i, match => match.toLowerCase());
+    return `${wsBase}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+  }
+}
+
 function render() {
-  const cfg = state.config || {};
+  const cfg = state.draft || state.config || {};
   const status = state.status || {};
+  const topbarMessageClass = status.error ? 'error' : (status.running ? 'success' : 'muted');
+  const messageClass = state.messageKind || (state.message ? 'success' : '');
+  const wsUrl = websocketURL(cfg);
   app.innerHTML = `
     <main class="page">
       <header class="topbar">
         <div>
           <h1>CodexMobileGateway</h1>
-          <p>${statusText()}</p>
+          <p class="${topbarMessageClass}">${statusText()}</p>
         </div>
         <div class="status ${status.running ? 'ok' : ''}">${status.running ? '运行中' : '已停止'}</div>
       </header>
@@ -69,7 +100,10 @@ function render() {
         </label>
         <label>
           <span>Codex 可执行文件</span>
-          <input id="codexBinary" value="${escapeHtml(cfg.codexBinary || 'codex')}" />
+          <div class="inline">
+            <input id="codexBinary" value="${escapeHtml(cfg.codexBinary || 'codex')}" />
+            <button id="detectCodex">自动查找</button>
+          </div>
         </label>
         <div class="grid two">
           <label>
@@ -88,6 +122,16 @@ function render() {
             <button id="copyUrl">复制连接</button>
           </div>
         </label>
+        <label>
+          <span>WSS 连接地址</span>
+          <div class="inline">
+            <input id="wssUrl" value="${escapeHtml(wsUrl)}" readonly />
+            <button id="copyWssUrl" class="icon-button" title="复制 WSS 连接地址" aria-label="复制 WSS 连接地址">
+              ${copyIcon()}
+            </button>
+          </div>
+          <small>只需要把这个地址填写入手机即可。</small>
+        </label>
         <div class="actions">
           <button id="save">保存配置</button>
           <button id="start" ${status.running ? 'disabled' : ''}>启动网关</button>
@@ -99,17 +143,24 @@ function render() {
       <section class="panel">
         <div class="section-heading">
           <div>
-            <div class="section-title">线程绑定</div>
-            <p>CODEX_THREAD_ID 不需要手动填写，从当前工作目录的线程列表选择即可。</p>
+            <div class="section-title">会话列表</div>
+            <p>从当前工作目录的会话列表中选择一个线程绑定。</p>
           </div>
           <button id="refreshThreads" ${status.running ? '' : 'disabled'}>刷新线程</button>
         </div>
         <div class="thread-list">
           ${state.threads.length === 0 ? '<div class="empty">暂无线程，启动网关后刷新。</div>' : state.threads.map(thread => `
-            <button class="thread ${thread.id === status.threadId ? 'active' : ''}" data-thread-id="${escapeHtml(thread.id)}">
-              <strong>${escapeHtml(thread.name || thread.preview || '无标题会话')}</strong>
-              <span>${escapeHtml(thread.id)}${thread.cwd ? ` · ${escapeHtml(thread.cwd)}` : ''}</span>
-            </button>
+            <div class="thread ${thread.id === status.threadId ? 'active' : ''}">
+              <div class="thread-main">
+                <strong>${escapeHtml(thread.name || thread.preview || '无标题会话')}</strong>
+                <span>${escapeHtml(thread.id)}${thread.cwd ? ` · ${escapeHtml(thread.cwd)}` : ''}</span>
+              </div>
+              <div class="thread-action">
+                ${thread.id === status.threadId
+                  ? '<span class="bound-label">已绑定</span>'
+                  : `<button class="bind-thread" data-thread-id="${escapeHtml(thread.id)}">绑定</button>`}
+              </div>
+            </div>
           `).join('')}
         </div>
       </section>
@@ -123,7 +174,7 @@ function render() {
           <dt>工作目录</dt><dd>${escapeHtml(status.cwd || cfg.workspace || '')}</dd>
           <dt>当前线程</dt><dd>${escapeHtml(status.threadId || '未绑定')}</dd>
         </dl>
-        <div class="message">${escapeHtml(state.message)}</div>
+        <div class="message ${messageClass}">${escapeHtml(state.message)}</div>
       </section>
     </main>
   `;
@@ -131,24 +182,48 @@ function render() {
 }
 
 function bindEvents() {
+  document.querySelectorAll('input').forEach(input => {
+    input.addEventListener('input', syncDraftFromForm);
+    input.addEventListener('change', syncDraftFromForm);
+  });
   document.querySelector('#chooseWorkspace')?.addEventListener('click', async () => {
     const selected = await SelectWorkspace();
-    if (selected) document.querySelector('#workspace').value = selected;
+    if (selected) {
+      document.querySelector('#workspace').value = selected;
+      syncDraftFromForm();
+    }
   });
   document.querySelector('#generateToken')?.addEventListener('click', async () => {
     document.querySelector('#token').value = await GenerateToken();
+    syncDraftFromForm();
+  });
+  document.querySelector('#detectCodex')?.addEventListener('click', async () => {
+    try {
+      const resolved = await DetectCodexBinary(document.querySelector('#codexBinary').value.trim());
+      document.querySelector('#codexBinary').value = resolved;
+      syncDraftFromForm();
+      state.message = '已找到 Codex 可执行文件';
+      state.messageKind = 'success';
+    } catch (error) {
+      state.message = error.toString();
+      state.messageKind = 'error';
+    }
+    render();
   });
   document.querySelector('#save')?.addEventListener('click', saveConfig);
-  document.querySelector('#start')?.addEventListener('click', async () => runAction('启动网关', StartGateway));
+  document.querySelector('#start')?.addEventListener('click', startGateway);
   document.querySelector('#stop')?.addEventListener('click', async () => runAction('停止网关', StopGateway));
   document.querySelector('#health')?.addEventListener('click', async () => {
+    syncDraftFromForm();
     state.status = await HealthCheck();
     state.message = '健康检查完成';
+    state.messageKind = state.status.error ? 'error' : 'success';
     render();
   });
   document.querySelector('#refreshThreads')?.addEventListener('click', refreshThreads);
   document.querySelector('#copyUrl')?.addEventListener('click', copyConnectionURL);
-  document.querySelectorAll('.thread').forEach(button => {
+  document.querySelector('#copyWssUrl')?.addEventListener('click', copyWebSocketURL);
+  document.querySelectorAll('.bind-thread').forEach(button => {
     button.addEventListener('click', async () => {
       await runAction('绑定线程', () => BindThread(button.dataset.threadId));
       await refreshThreads();
@@ -168,47 +243,136 @@ function collectConfig() {
   };
 }
 
+function syncDraftFromForm() {
+  if (!document.querySelector('#workspace')) return;
+  state.draft = collectConfig();
+}
+
 async function saveConfig() {
   try {
+    const previousWorkspace = state.config?.workspace || '';
     const snapshot = await SaveConfig(collectConfig());
     state.config = snapshot.config;
+    state.draft = null;
     state.status = snapshot.status;
-    state.message = '配置已保存';
+    state.messageKind = 'success';
+    const workspaceChanged = previousWorkspace && previousWorkspace !== snapshot.config.workspace;
+    if (snapshot.status.running) {
+      state.threads = await ListThreads();
+      state.message = workspaceChanged
+        ? `工作目录已切换，网关已重启，已刷新 ${state.threads.length} 个会话`
+        : `配置已保存，已刷新 ${state.threads.length} 个会话`;
+    } else {
+      state.threads = workspaceChanged ? [] : state.threads;
+      state.message = workspaceChanged ? '工作目录已切换，启动网关后会使用新目录' : '配置已保存';
+    }
   } catch (error) {
     state.message = error.toString();
+    state.messageKind = 'error';
   }
   render();
 }
 
 async function runAction(label, action) {
   try {
+    syncDraftFromForm();
     state.status = await action();
     state.message = `${label}完成`;
+    state.messageKind = state.status.error ? 'error' : 'success';
   } catch (error) {
     state.message = error.toString();
+    state.messageKind = 'error';
+  }
+  render();
+}
+
+async function startGateway() {
+  try {
+    syncDraftFromForm();
+    state.status = await StartGateway();
+    state.messageKind = state.status.error ? 'error' : 'success';
+    if (state.status.error) {
+      state.message = state.status.error;
+      render();
+      return;
+    }
+    state.threads = await ListThreads();
+    state.message = `启动网关完成，已刷新 ${state.threads.length} 个会话`;
+  } catch (error) {
+    state.message = error.toString();
+    state.messageKind = 'error';
   }
   render();
 }
 
 async function refreshThreads() {
   try {
+    syncDraftFromForm();
     state.threads = await ListThreads();
     state.message = `已刷新 ${state.threads.length} 个线程`;
+    state.messageKind = 'success';
   } catch (error) {
     state.message = error.toString();
+    state.messageKind = 'error';
   }
   render();
 }
 
+async function refreshThreadsSilently() {
+  if (!state.status?.running) return;
+  try {
+    state.threads = await ListThreads();
+  } catch (error) {
+    state.message = error.toString();
+    state.messageKind = 'error';
+  }
+}
+
+function scheduleThreadRefresh(delay = 0) {
+  if (state.refreshTimer) {
+    window.clearTimeout(state.refreshTimer);
+  }
+  state.refreshTimer = window.setTimeout(async () => {
+    state.refreshTimer = null;
+    await refreshThreadsSilently();
+    render();
+  }, delay);
+}
+
 async function copyConnectionURL() {
   try {
+    syncDraftFromForm();
     const url = await ConnectionURL(document.querySelector('#baseUrl').value.trim());
     await navigator.clipboard.writeText(url);
     state.message = '连接地址已复制';
+    state.messageKind = 'success';
   } catch (error) {
     state.message = error.toString();
+    state.messageKind = 'error';
   }
   render();
+}
+
+async function copyWebSocketURL() {
+  try {
+    syncDraftFromForm();
+    await navigator.clipboard.writeText(websocketURL(state.draft || state.config || {}));
+    state.message = 'WSS 连接地址复制成功';
+    state.messageKind = 'success';
+  } catch (error) {
+    state.message = error.toString();
+    state.messageKind = 'error';
+  }
+  render();
+}
+
+function copyIcon() {
+  return `
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+      <path d="M5 15V6a2 2 0 0 1 2-2h9"></path>
+    </svg>
+  `;
 }
 
 function escapeHtml(value) {
@@ -227,13 +391,26 @@ async function boot() {
     state.status = snapshot.status;
   } catch (error) {
     state.message = error.toString();
+    state.messageKind = 'error';
   }
   render();
 }
 
-Events.On('gateway:status', (event) => {
+Events.On('gateway:status', async (event) => {
+  const previousThreadId = state.status?.threadId || '';
   state.status = event.data;
+  state.messageKind = state.status.error ? 'error' : state.messageKind;
+  const nextThreadId = state.status?.threadId || '';
+  if (nextThreadId !== previousThreadId) {
+    await refreshThreadsSilently();
+  }
   render();
+});
+
+Events.On('gateway:threadsChanged', async () => {
+  await refreshThreadsSilently();
+  render();
+  scheduleThreadRefresh(1200);
 });
 
 boot();

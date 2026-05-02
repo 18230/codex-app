@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -46,6 +48,35 @@ func TestNormalizeConfigRejectsInvalidWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for file workspace")
 	}
+}
+
+// TestResolveCodexBinaryAcceptsExecutablePath 验证显式可执行路径会被保留，避免 GUI 环境 PATH 缺失时无法启动。
+func TestResolveCodexBinaryAcceptsExecutablePath(t *testing.T) {
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "codex-test")
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("write temp executable: %v", err)
+	}
+	resolved, err := ResolveCodexBinary(binaryPath)
+	if err != nil {
+		t.Fatalf("ResolveCodexBinary returned error: %v", err)
+	}
+	if resolved != binaryPath {
+		t.Fatalf("expected %q, got %q", binaryPath, resolved)
+	}
+}
+
+// TestFreeTCPPort 验证内部 app-server 端口冲突时可以分配新的可用端口。
+func TestFreeTCPPort(t *testing.T) {
+	port, err := freeTCPPort("127.0.0.1")
+	if err != nil {
+		t.Fatalf("freeTCPPort returned error: %v", err)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("expected allocated port to be reusable: %v", err)
+	}
+	_ = listener.Close()
 }
 
 // TestThreadSummaries 验证 thread/list 返回能转换为桌面列表结构。

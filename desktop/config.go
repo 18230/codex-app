@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -116,7 +117,7 @@ func DefaultConfig() (AppConfig, error) {
 	return NormalizeConfig(AppConfig{
 		Workspace:             home,
 		Token:                 token,
-		CodexBinary:           defaultCodexBinaryValue,
+		CodexBinary:           defaultCodexBinary(),
 		Host:                  defaultHost,
 		Port:                  defaultPort,
 		CodexHost:             defaultCodexHost,
@@ -149,7 +150,9 @@ func NormalizeConfig(cfg AppConfig) (AppConfig, error) {
 	}
 	cfg.CodexBinary = strings.TrimSpace(cfg.CodexBinary)
 	if cfg.CodexBinary == "" {
-		cfg.CodexBinary = defaultCodexBinaryValue
+		cfg.CodexBinary = defaultCodexBinary()
+	} else if cfg.CodexBinary == defaultCodexBinaryValue {
+		cfg.CodexBinary = defaultCodexBinary()
 	}
 	cfg.Host = strings.TrimSpace(cfg.Host)
 	if cfg.Host == "" {
@@ -173,6 +176,103 @@ func NormalizeConfig(cfg AppConfig) (AppConfig, error) {
 		cfg.LastConnectionBaseURL = "https://xxx.com"
 	}
 	return cfg, nil
+}
+
+// defaultCodexBinary 返回当前机器可用的 Codex 可执行文件路径，避免 GUI 应用拿不到终端 PATH。
+func defaultCodexBinary() string {
+	if resolved, err := ResolveCodexBinary(defaultCodexBinaryValue); err == nil {
+		return resolved
+	}
+	return defaultCodexBinaryValue
+}
+
+// ResolveCodexBinary 尽量解析 Codex 可执行文件真实路径，兼容 macOS GUI 环境和 Windows 安装目录。
+func ResolveCodexBinary(input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		input = defaultCodexBinaryValue
+	}
+	if filepath.IsAbs(input) || strings.ContainsAny(input, `/\`) {
+		if err := validateExecutable(input); err != nil {
+			return "", err
+		}
+		return input, nil
+	}
+	if path, err := exec.LookPath(input); err == nil {
+		return path, nil
+	}
+	for _, candidate := range codexBinaryCandidates(input) {
+		if err := validateExecutable(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	if path, err := resolveFromLoginShell(input); err == nil {
+		return path, nil
+	}
+	return "", fmt.Errorf("未找到 Codex 可执行文件: %s", input)
+}
+
+// codexBinaryCandidates 返回各平台常见的 Codex 安装位置。
+func codexBinaryCandidates(name string) []string {
+	home, _ := os.UserHomeDir()
+	if runtime.GOOS == "windows" {
+		localAppData := os.Getenv("LOCALAPPDATA")
+		programFiles := os.Getenv("ProgramFiles")
+		return []string{
+			filepath.Join(localAppData, "Programs", "Codex", name+".exe"),
+			filepath.Join(programFiles, "Codex", name+".exe"),
+		}
+	}
+	return []string{
+		"/Applications/Codex.app/Contents/Resources/codex",
+		"/opt/homebrew/bin/" + name,
+		"/usr/local/bin/" + name,
+		filepath.Join(home, ".local", "bin", name),
+		filepath.Join(home, "go", "bin", name),
+	}
+}
+
+// resolveFromLoginShell 通过用户登录 shell 获取 PATH，解决 macOS 双击启动应用时 PATH 不完整的问题。
+func resolveFromLoginShell(name string) (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("Windows 不使用登录 shell 查找")
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+	output, err := exec.Command(shell, "-lc", "command -v "+shellQuote(name)).Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return "", fmt.Errorf("登录 shell 未返回 Codex 路径")
+	}
+	if err := validateExecutable(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// validateExecutable 确认路径存在、不是目录，并且当前用户可执行。
+func validateExecutable(path string) error {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if stat.IsDir() {
+		return fmt.Errorf("Codex 可执行文件不能是目录: %s", path)
+	}
+	if runtime.GOOS != "windows" && stat.Mode()&0o111 == 0 {
+		return fmt.Errorf("Codex 文件不可执行: %s", path)
+	}
+	return nil
+}
+
+// shellQuote 对登录 shell 命令参数做最小安全转义。
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 // validateWorkspacePath 校验工作目录必须存在且是目录。

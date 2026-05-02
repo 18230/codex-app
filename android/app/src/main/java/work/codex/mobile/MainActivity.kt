@@ -100,7 +100,6 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.launch
 
-private const val DEFAULT_WORKSPACE = "/Users/gaoqi/Desktop/data/local"
 private const val APP_HEARTBEAT_INTERVAL_MS = 25_000L
 private const val APP_HEARTBEAT_TIMEOUT_MS = 75_000L
 private const val RECONNECT_BASE_DELAY_MS = 1_000L
@@ -399,12 +398,13 @@ private class GatewayClient(
 private fun CodexMobileApp(store: SecureConnectionStore) {
     val savedUrl = remember { mutableStateOf(store.readConnectionUrl()) }
     var connectionInput by remember { mutableStateOf(maskConnectionUrl(savedUrl.value.orEmpty())) }
-    var workspace by remember { mutableStateOf(DEFAULT_WORKSPACE) }
+    var gatewayWorkspace by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("未连接") }
     var threadId by remember { mutableStateOf("") }
     var threadTitle by remember { mutableStateOf("无标题会话") }
     var draft by remember { mutableStateOf("") }
     var activeTurnId by remember { mutableStateOf<String?>(null) }
+    var pendingThreadSwitchId by remember { mutableStateOf<String?>(null) }
     var client by remember { mutableStateOf<GatewayClient?>(null) }
     var autoConnectDone by remember { mutableStateOf(false) }
     var healthReport by remember { mutableStateOf(HealthReport()) }
@@ -413,6 +413,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
     val scope = rememberCoroutineScope()
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val outputLines = remember { mutableStateListOf<OutputLine>() }
     val threadSummaries = remember { mutableStateListOf<ThreadSummary>() }
     val diagnostics = remember { mutableStateListOf<DiagnosticEntry>() }
@@ -475,20 +476,6 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
     }
 
     /**
-     * 请求服务端校验工作目录是否存在且可作为目录使用。
-     */
-    fun requestWorkspaceCheck() {
-        val activeClient = client
-        if (activeClient == null) {
-            addDiagnostic("目录检查", "尚未连接网关")
-            setAppStatus("未连接", log = true)
-            return
-        }
-        addDiagnostic("目录检查", "检查目录：$workspace")
-        activeClient.send(JSONObject().put("type", "workspace.check").put("cwd", workspace))
-    }
-
-    /**
      * 清空本地保存的连接地址，下次打开仍需要手动输入。
      */
     fun clearSavedConnection() {
@@ -500,12 +487,27 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
     }
 
     /**
+     * 请求刷新手机端会话列表；部分标题更新有落盘延迟，允许延迟补刷。
+     */
+    fun requestThreadList(delayMs: Long = 0L) {
+        val task = Runnable {
+            client?.send(JSONObject().put("type", "thread.list"))
+        }
+        if (delayMs <= 0L) {
+            task.run()
+        } else {
+            mainHandler.postDelayed(task, delayMs)
+        }
+    }
+
+    /**
      * 处理网关事件并更新界面状态。
      */
     fun handleEvent(event: JSONObject) {
         when (event.optString("type")) {
             "ready" -> {
                 threadId = event.optString("threadId")
+                gatewayWorkspace = event.optString("cwd").ifBlank { gatewayWorkspace }
                 setAppStatus("已连接", log = true)
             }
             "thread" -> {
@@ -514,8 +516,20 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                 val nextCwd = thread?.optString("cwd").orEmpty()
                 val nextTitle = thread?.let { firstNonBlankJsonString(it, "name", "title", "preview") }.orEmpty()
                 if (nextThreadId.isNotBlank()) threadId = nextThreadId
-                if (nextCwd.isNotBlank()) workspace = nextCwd
-                if (nextThreadId.isNotBlank()) threadTitle = nextTitle.ifBlank { "无标题会话" }
+                if (nextCwd.isNotBlank()) gatewayWorkspace = nextCwd
+                if (nextThreadId.isNotBlank()) {
+                    threadTitle = nextTitle.ifBlank { "无标题会话" }
+                    if (pendingThreadSwitchId == nextThreadId) {
+                        pendingThreadSwitchId = null
+                        setAppStatus("已切换", log = true)
+                        addDiagnostic("会话", "已切换到：${threadTitle.ifBlank { nextThreadId.take(8) }}")
+                    } else if (status == "正在新建会话") {
+                        setAppStatus("已新建", log = true)
+                        addDiagnostic("会话", "已新建会话：${threadTitle.ifBlank { nextThreadId.take(8) }}")
+                    }
+                    requestThreadList()
+                    requestThreadList(1200L)
+                }
             }
             "threads" -> {
                 threadSummaries.clear()
@@ -533,6 +547,11 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                     ?.let { threadTitle = it }
                 outputLines.clear()
                 outputLines.addAll(parseHistoryLines(event.optJSONArray("lines")))
+                if (pendingThreadSwitchId == resolvedThreadId) {
+                    pendingThreadSwitchId = null
+                    setAppStatus("已切换", log = true)
+                    addDiagnostic("会话", "已同步 ${outputLines.size} 条历史记录")
+                }
                 requestOutputScroll()
             }
             "turn.started" -> {
@@ -542,6 +561,8 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             "turn.completed" -> {
                 activeTurnId = null
                 setAppStatus("执行完成", log = true)
+                requestThreadList()
+                requestThreadList(1200L)
             }
             "delta" -> appendOutput(
                 LineKind.Assistant,
@@ -553,16 +574,21 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             "plan.updated" -> setAppStatus("计划已更新")
             "file.patch" -> setAppStatus("文件变更已更新")
             "status" -> setAppStatus("Codex 状态更新")
+            "threads.changed" -> {
+                requestThreadList()
+                requestThreadList(1200L)
+            }
             "health" -> {
                 healthReport = parseHealthReport(event.optJSONObject("report"))
+                if (healthReport.cwd.isNotBlank()) gatewayWorkspace = healthReport.cwd
                 val nextStatus = if (healthReport.appServer == "connected") "健康正常" else "Codex 未连接"
                 setAppStatus(nextStatus, log = true)
                 addDiagnostic("健康检查", healthReportSummary(healthReport))
             }
             "workspace" -> {
                 if (event.optBoolean("ok", false)) {
-                    val checkedCwd = event.optString("cwd").ifBlank { workspace }
-                    workspace = checkedCwd
+                    val checkedCwd = event.optString("cwd").ifBlank { gatewayWorkspace }
+                    gatewayWorkspace = checkedCwd
                     setAppStatus("目录可用", log = true)
                     addDiagnostic("目录检查", "目录可用：$checkedCwd")
                 } else {
@@ -606,8 +632,8 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                 savedUrl.value = rawUrl
                 connectionInput = maskConnectionUrl(rawUrl)
                 setAppStatus("已连接", log = true)
-                opened.send(JSONObject().put("type", "thread.resume").put("cwd", workspace))
-                opened.send(JSONObject().put("type", "thread.list").put("cwd", workspace))
+                opened.send(JSONObject().put("type", "thread.read"))
+                opened.send(JSONObject().put("type", "thread.list"))
                 opened.send(JSONObject().put("type", "health.check"))
             },
             onEvent = ::handleEvent,
@@ -683,23 +709,25 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                             threads = threadSummaries,
                             currentThreadId = threadId,
                             onCreate = {
-                                currentScreen = AppScreen.Chat
-                                client?.send(JSONObject().put("type", "thread.start").put("cwd", workspace))
-                                scope.launch { drawerState.close() }
-                            },
+                currentScreen = AppScreen.Chat
+                client?.send(JSONObject().put("type", "thread.start"))
+                setAppStatus("正在新建会话", log = true)
+                scope.launch { drawerState.close() }
+            },
                             onRefresh = {
-                                client?.send(JSONObject().put("type", "thread.list").put("cwd", workspace))
+                                client?.send(JSONObject().put("type", "thread.list"))
                             },
                             onSwitch = { summary ->
                                 currentScreen = AppScreen.Chat
-                                if (summary.cwd.isNotBlank()) workspace = summary.cwd
+                                if (summary.cwd.isNotBlank()) gatewayWorkspace = summary.cwd
                                 threadTitle = summary.preview.ifBlank { "无标题会话" }
-                                setAppStatus("切换会话中", log = true)
+                                pendingThreadSwitchId = summary.id
+                                setAppStatus("正在切换", log = true)
+                                addDiagnostic("会话", "请求切换到：${threadTitle.ifBlank { summary.id.take(8) }}")
                                 client?.send(
                                     JSONObject()
                                         .put("type", "thread.resume")
-                                        .put("threadId", summary.id)
-                                        .put("cwd", if (summary.cwd.isNotBlank()) summary.cwd else workspace),
+                                        .put("threadId", summary.id),
                                 )
                                 scope.launch { drawerState.close() }
                             },
@@ -777,7 +805,6 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                     val payload = if (activeTurnId == null) {
                                         JSONObject()
                                             .put("type", "turn.start")
-                                            .put("cwd", workspace)
                                             .put("text", text)
                                     } else {
                                         JSONObject()
@@ -798,8 +825,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                         AppScreen.Config -> ConfigScreen(
                             connectionInput = connectionInput,
                             onConnectionChange = { connectionInput = it },
-                            workspace = workspace,
-                            onWorkspaceChange = { workspace = it },
+                            gatewayWorkspace = gatewayWorkspace,
                             status = status,
                             savedUrl = savedUrl.value,
                             healthReport = healthReport,
@@ -811,7 +837,6 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                             },
                             onClearConnection = ::clearSavedConnection,
                             onHealthCheck = ::requestHealthCheck,
-                            onWorkspaceCheck = ::requestWorkspaceCheck,
                             modifier = Modifier.weight(1f),
                         )
 
@@ -889,14 +914,13 @@ private fun DrawerNavRow(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * 独立配置页，集中处理连接、健康检查和工作目录检查。
+ * 独立配置页，集中处理连接和健康检查。
  */
 @Composable
 private fun ConfigScreen(
     connectionInput: String,
     onConnectionChange: (String) -> Unit,
-    workspace: String,
-    onWorkspaceChange: (String) -> Unit,
+    gatewayWorkspace: String,
     status: String,
     savedUrl: String?,
     healthReport: HealthReport,
@@ -904,7 +928,6 @@ private fun ConfigScreen(
     onDisconnect: () -> Unit,
     onClearConnection: () -> Unit,
     onHealthCheck: () -> Unit,
-    onWorkspaceCheck: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -919,15 +942,13 @@ private fun ConfigScreen(
             ConnectionPanel(
                 connectionInput = connectionInput,
                 onConnectionChange = onConnectionChange,
-                workspace = workspace,
-                onWorkspaceChange = onWorkspaceChange,
+                gatewayWorkspace = gatewayWorkspace,
                 status = status,
                 hasSavedConnection = !savedUrl.isNullOrBlank(),
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
                 onClearConnection = onClearConnection,
                 onHealthCheck = onHealthCheck,
-                onWorkspaceCheck = onWorkspaceCheck,
             )
         }
         item {
@@ -937,21 +958,19 @@ private fun ConfigScreen(
 }
 
 /**
- * 渲染连接地址和工作区输入。
+ * 渲染连接地址和网关提供的工作目录。
  */
 @Composable
 private fun ConnectionPanel(
     connectionInput: String,
     onConnectionChange: (String) -> Unit,
-    workspace: String,
-    onWorkspaceChange: (String) -> Unit,
+    gatewayWorkspace: String,
     status: String,
     hasSavedConnection: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onClearConnection: () -> Unit,
     onHealthCheck: () -> Unit,
-    onWorkspaceCheck: () -> Unit,
 ) {
     Card(
         shape = RoundedCornerShape(8.dp),
@@ -984,24 +1003,22 @@ private fun ConnectionPanel(
                 CompactActionButton(text = "清空", onClick = onClearConnection)
             }
             Text("工作目录", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            CompactTextField(
-                value = workspace,
-                onValueChange = onWorkspaceChange,
-                modifier = keyboardOnFocusModifier(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 42.dp),
-                ),
-                placeholder = "工作区",
-                minLines = 1,
-                maxLines = 2,
-	            )
-	            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-	                CompactActionButton(text = "健康检查", onClick = onHealthCheck)
-	                CompactActionButton(text = "目录检查", onClick = onWorkspaceCheck)
-	            }
-	        }
-	    }
+            Text(
+                text = gatewayWorkspace.ifBlank { "连接网关后自动获取" },
+                modifier = Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF1F2622),
+            )
+            Text(
+                text = "工作目录由桌面网关统一提供，手机端无需单独填写。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF5A665F),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactActionButton(text = "健康检查", onClick = onHealthCheck)
+            }
+        }
+    }
 }
 
 /**
@@ -1628,7 +1645,7 @@ private fun classifyGatewayError(rawMessage: String): String {
         "token" in lower && ("缺少" in message || "invalid" in lower || "unauthorized" in lower) ->
             "连接 token 无效：请确认配置页中的连接地址是最新生成的地址。"
         "工作" in message || "目录" in message || "cwd" in lower || "path" in lower ->
-            "工作目录错误：请在配置页确认目录存在，并运行目录检查。原始信息：$message"
+            "工作目录错误：请在桌面网关确认目录存在，然后在手机端重新连接。原始信息：$message"
         "already" in lower && "turn" in lower || "已有 turn" in message ->
             "当前已有任务正在执行：请等待完成或点击停止后再发送。"
         "failed to connect" in lower || "连接" in message || "timeout" in lower ->

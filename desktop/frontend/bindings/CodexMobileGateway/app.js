@@ -36,6 +36,15 @@ export function ConnectionURL(host) {
 }
 
 /**
+ * DetectCodexBinary 自动查找本机 Codex 可执行文件。
+ * @param {string} input
+ * @returns {$CancellablePromise<string>}
+ */
+export function DetectCodexBinary(input) {
+    return $Call.ByID(4033048004, input);
+}
+
+/**
  * GenerateToken 生成 32 字节随机 token，用于手机端连接鉴权。
  * @returns {$CancellablePromise<string>}
  */
@@ -82,7 +91,7 @@ export function QuitApp() {
 }
 
 /**
- * SaveConfig 保存配置；如果网关正在运行，要求用户手动重启以避免半配置状态。
+ * SaveConfig 保存配置；工作目录变化且网关运行时自动重启，让手机端重连后拿到新目录。
  * @param {$models.AppConfig} cfg
  * @returns {$CancellablePromise<$models.AppSnapshot>}
  */

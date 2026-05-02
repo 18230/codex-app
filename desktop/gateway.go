@@ -68,6 +68,14 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	if err != nil {
 		return g.Status(), err
 	}
+	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+		port, err := freeTCPPort(cfg.CodexHost)
+		if err != nil {
+			return g.Status(), err
+		}
+		cfg.CodexPort = port
+		_ = g.store.Save(cfg)
+	}
 
 	ctx := context.Background()
 	codex := NewCodexClient(cfg)
@@ -119,6 +127,30 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	}()
 	g.emit("gateway:status", g.Status())
 	return g.Status(), nil
+}
+
+// isTCPPortAvailable 判断内部 Codex app-server 端口是否可绑定。
+func isTCPPortAvailable(host string, port int) bool {
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
+
+// freeTCPPort 获取一个空闲内部端口，避免残留 app-server 占用固定端口导致启动失败。
+func freeTCPPort(host string) (int, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:0", host))
+	if err != nil {
+		return 0, fmt.Errorf("分配 Codex app-server 端口失败: %w", err)
+	}
+	defer listener.Close()
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("无法读取 Codex app-server 端口")
+	}
+	return addr.Port, nil
 }
 
 // Stop 停止网关和所有子连接。
@@ -440,6 +472,8 @@ func (g *Gateway) clientThreadStart(conn *websocket.Conn, requestID string, cwd 
 	g.currentCWD = resolved
 	g.activeTurn = ""
 	g.mu.Unlock()
+	g.emit("gateway:status", g.Status())
+	g.notifyThreadsChanged("thread-started")
 	_ = conn.WriteJSON(JSONObject{"type": "thread", "thread": thread})
 	_ = conn.WriteJSON(JSONObject{"type": "history", "threadId": threadID, "lines": []HistoryLine{}})
 	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
@@ -447,17 +481,20 @@ func (g *Gateway) clientThreadStart(conn *websocket.Conn, requestID string, cwd 
 
 // clientThreadResume 恢复指定线程。
 func (g *Gateway) clientThreadResume(conn *websocket.Conn, requestID string, threadID string, cwd string) error {
-	if threadID == "" {
-		return fmt.Errorf("threadId 不能为空")
-	}
 	g.mu.Lock()
 	codex := g.codex
+	if threadID == "" {
+		threadID = g.currentID
+	}
 	if cwd == "" {
 		cwd = g.currentCWD
 	}
 	g.mu.Unlock()
 	if codex == nil {
 		return fmt.Errorf("网关尚未启动")
+	}
+	if threadID == "" {
+		return fmt.Errorf("当前没有可恢复的会话，请先新建或绑定一个会话")
 	}
 	resolved, err := validateWorkspacePath(cwd)
 	if err != nil {
@@ -478,6 +515,8 @@ func (g *Gateway) clientThreadResume(conn *websocket.Conn, requestID string, thr
 	g.currentCWD = resolved
 	g.activeTurn = ""
 	g.mu.Unlock()
+	g.emit("gateway:status", g.Status())
+	g.notifyThreadsChanged("thread-resumed")
 	_ = conn.WriteJSON(JSONObject{"type": "thread", "thread": readThread(result)})
 	_ = conn.WriteJSON(JSONObject{"type": "history", "threadId": threadID, "lines": g.historyLinesFromSessionFile(threadID)})
 	return conn.WriteJSON(JSONObject{"type": "response", "requestId": requestID, "ok": true, "data": result})
@@ -614,6 +653,7 @@ func (g *Gateway) handleCodexNotification(message JSONObject) {
 		g.activeTurn = ""
 		g.mu.Unlock()
 		g.broadcast(JSONObject{"type": "turn.completed", "threadId": firstNonEmpty(threadID, currentID), "turn": params["turn"]})
+		g.notifyThreadsChanged("turn-completed")
 	case "item/agentMessage/delta":
 		g.broadcast(JSONObject{"type": "delta", "threadId": threadID, "turnId": stringField(params, "turnId"), "itemId": stringField(params, "itemId"), "text": fmt.Sprint(params["delta"])})
 	case "item/commandExecution/outputDelta", "item/fileChange/outputDelta":
@@ -719,6 +759,15 @@ func (g *Gateway) setError(err error) {
 	g.lastError = redactSecrets(err)
 	g.mu.Unlock()
 	g.emit("gateway:status", g.Status())
+}
+
+// notifyThreadsChanged 通知桌面端刷新会话列表，覆盖手机端新建、切换和对话完成后的列表更新。
+func (g *Gateway) notifyThreadsChanged(reason string) {
+	g.emit("gateway:threadsChanged", JSONObject{
+		"reason":    reason,
+		"threadId":  g.Status().ThreadID,
+		"timestamp": time.Now().UnixMilli(),
+	})
 }
 
 // emit 向 Wails 前端推送事件。

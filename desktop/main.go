@@ -3,15 +3,19 @@ package main
 import (
 	"embed"
 	"log"
-	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
-	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed build/appicon.png
+var appIcon []byte
+
+//go:embed build/tray-icon.png
+var trayIcon []byte
 
 // main 使用 Wails v3 创建桌面窗口和系统托盘，并注册网关服务。
 func main() {
@@ -19,7 +23,7 @@ func main() {
 	app := application.New(application.Options{
 		Name:        "CodexMobileGateway",
 		Description: "Codex Mobile Gateway desktop controller",
-		Icon:        icons.ApplicationLightMode256,
+		Icon:        appIcon,
 		Services: []application.Service{
 			application.NewService(service),
 		},
@@ -52,14 +56,9 @@ func main() {
 	})
 
 	tray := app.SystemTray.New()
-	if runtime.GOOS == "darwin" {
-		tray.SetTemplateIcon(icons.SystrayMacTemplate)
-	} else {
-		tray.SetIcon(icons.ApplicationLightMode256)
-	}
-	tray.SetLabel("Codex")
+	tray.SetIcon(trayIcon)
+	tray.SetLabel("")
 	tray.SetTooltip("CodexMobileGateway")
-	tray.AttachWindow(window).WindowOffset(5)
 	tray.OnRightClick(func() {
 		tray.OpenMenu()
 	})

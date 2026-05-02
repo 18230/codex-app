@@ -51,6 +51,11 @@ input {
   outline: none;
 }
 
+input[readonly] {
+  color: #57606a;
+  background: #f6f8fa;
+}
+
 input:focus {
   border-color: #24292f;
 }
@@ -79,6 +84,14 @@ input:focus {
 .topbar p {
   margin: 6px 0 0;
   color: #57606a;
+}
+
+.topbar p.success {
+  color: #116329;
+}
+
+.topbar p.error {
+  color: #cf222e;
 }
 
 .status {
@@ -142,6 +155,24 @@ label small {
   flex: 0 0 auto;
 }
 
+.icon-button {
+  width: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .grid.two {
   display: grid;
   grid-template-columns: 1fr 160px;
@@ -161,10 +192,14 @@ label small {
 }
 
 .thread {
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   width: 100%;
   height: auto;
   padding: 12px 14px;
+  border: 1px solid #d0d7de;
   border-radius: 8px;
   text-align: left;
 }
@@ -175,16 +210,39 @@ label small {
 }
 
 .thread strong {
+  display: block;
   font-weight: 600;
 }
 
 .thread span {
+  display: block;
   margin-top: 4px;
   color: #57606a;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.thread-main {
+  min-width: 0;
+}
+
+.thread-action {
+  flex: 0 0 72px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.bound-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 52px;
+  color: #116329;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .empty {
@@ -213,4 +271,12 @@ label small {
   min-height: 22px;
   margin-top: 18px;
   color: #57606a;
+}
+
+.message.success {
+  color: #116329;
+}
+
+.message.error {
+  color: #cf222e;
 }

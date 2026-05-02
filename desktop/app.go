@@ -70,16 +70,32 @@ func (a *App) GetConfig() (AppSnapshot, error) {
 	return AppSnapshot{Config: cfg, Status: a.gateway.Status()}, nil
 }
 
-// SaveConfig 保存配置；如果网关正在运行，要求用户手动重启以避免半配置状态。
+// SaveConfig 保存配置；工作目录变化且网关运行时自动重启，让手机端重连后拿到新目录。
 func (a *App) SaveConfig(cfg AppConfig) (AppSnapshot, error) {
+	previous, _ := a.store.Load()
 	normalized, err := NormalizeConfig(cfg)
 	if err != nil {
 		return AppSnapshot{}, err
 	}
+	workspaceChanged := previous.Workspace != "" && previous.Workspace != normalized.Workspace
+	if workspaceChanged {
+		normalized.BoundThreadID = ""
+	}
 	if err := a.store.Save(normalized); err != nil {
 		return AppSnapshot{}, err
 	}
-	return AppSnapshot{Config: normalized, Status: a.gateway.Status()}, nil
+	status := a.gateway.Status()
+	if workspaceChanged && status.Running {
+		if err := a.gateway.Stop(); err != nil {
+			return AppSnapshot{Config: normalized, Status: a.gateway.Status()}, err
+		}
+		restartedStatus, err := a.gateway.Start()
+		if err != nil {
+			return AppSnapshot{Config: normalized, Status: restartedStatus}, err
+		}
+		status = restartedStatus
+	}
+	return AppSnapshot{Config: normalized, Status: status}, nil
 }
 
 // GenerateToken 生成 32 字节随机 token，用于手机端连接鉴权。
@@ -89,6 +105,11 @@ func (a *App) GenerateToken() (string, error) {
 		return "", fmt.Errorf("生成 token 失败: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// DetectCodexBinary 自动查找本机 Codex 可执行文件。
+func (a *App) DetectCodexBinary(input string) (string, error) {
+	return ResolveCodexBinary(input)
 }
 
 // SelectWorkspace 打开系统目录选择框，并返回用户选择的工作目录。

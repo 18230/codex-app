@@ -2,8 +2,7 @@
 
 本项目提供一个自用 Codex 手机端入口：
 
-- `server`：监听 `127.0.0.1:8000` 的本地网关，负责鉴权、连接 Codex app-server、转发实时输出。
-- `desktop`：Go + Wails v3 桌面版网关，提供配置界面、线程绑定和本机常驻运行。
+- `desktop`：Go + Wails v3 桌面网关，监听本机端口，负责鉴权、连接 Codex app-server、转发实时输出和托盘常驻。
 - `android`：Android 原生 Kotlin 客户端，通过 WebSocket 连接 `https://xxx.com`。
 
 ## 界面预览
@@ -39,18 +38,29 @@
 ## 功能特性
 
 - 手机端连接本机 Codex Gateway，复用 Codex 线程能力。
-- 支持新建会话、切换会话、历史同步和实时回复。
+- 支持新建会话、切换会话、历史同步和实时回复；手机端新建或对话完成后会自动刷新会话列表。
 - 提供配置页、健康检查、目录检查和诊断日志。
-- 支持 macOS `launchd` 和 Windows 计划任务常驻运行。
-- 支持桌面版 `CodexMobileGateway`，可在界面中配置工作目录、token、Codex 路径并选择线程绑定。
+- 桌面版 `CodexMobileGateway` 可在界面中配置工作目录、token、Codex 路径并选择线程绑定。
 - 桌面版使用 Wails v3 原生 System Tray API，关闭窗口后仍可通过托盘菜单显示、启动、停止或退出网关。
 - 连接地址和 token 只保存在手机本地加密存储，不写入仓库。
 
+## 下载
+
+发布包在 GitHub Releases 中提供：
+
+- `CodexMobileGateway.dmg`：macOS Apple Silicon 桌面网关。
+- `CodexMobileGateway.exe`：Windows x86_64 便携版桌面网关。
+- `app-debug.apk`：Android 手机端安装包。
+
+桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
+
 ## 桌面网关
 
-桌面版位于 `desktop`，用于替代手动配置 `.env` 和启动脚本。首次启动会自动生成 token，`CODEX_THREAD_ID` 不需要手动填写，启动网关后在界面中刷新线程列表并选择要绑定的会话即可。
+桌面版位于 `desktop`，是当前唯一推荐的本地网关实现。首次启动会自动生成 token，`CODEX_THREAD_ID` 不需要手动填写，启动网关后在界面中刷新线程列表并选择要绑定的会话即可。
 
 桌面版基于 Wails v3，使用原生统一 System Tray API：关闭主窗口只会隐藏应用，网关仍可常驻运行；托盘菜单提供显示窗口、启动网关、停止网关和退出。
+
+旧的 Node.js 网关已经移除，后续统一使用 Go + Wails 桌面网关。
 
 macOS Apple Silicon 本机打包：
 
@@ -67,30 +77,27 @@ desktop/bin/CodexMobileGateway.dmg
 
 Windows 便携版通过 GitHub Actions 构建，产物名为 `CodexMobileGateway.exe`。第一版未做代码签名，系统可能提示安全确认。
 
-## 配置文件
+## 配置
 
-复制模板并改成本机配置：
+桌面网关的配置都在应用界面中完成：
 
-```bash
-cp server/.env.example server/.env
-```
+- `工作目录`：Codex 执行项目任务的目录，手机端会自动读取网关提供的目录。
+- `Token`：访问网关的长随机 token，泄露后等同于允许远程控制本机 Codex。
+- `Codex 可执行文件`：可留空后点击自动查找，也可填写本机 Codex 可执行文件路径。
+- `公网连接地址`：Cloudflare Tunnel 或其他内网穿透暴露出的 HTTPS 地址。
 
-最小配置：
-
-```env
-CODEX_MOBILE_TOKEN=替换为至少16位随机token
-CODEX_BINARY=codex
-```
-
-`CODEX_THREAD_ID` 可选。不配置时，网关启动会自动创建一个默认 Codex 线程；手机端发起新会话时会创建并绑定新线程。
-
-`CODEX_MOBILE_DEFAULT_CWD` 也可选。不配置时，脚本会默认使用当前项目根目录；迁移到其他目录或 Windows 时通常不需要改路径。
-
-手机端连接示例：
+手机端只需要填写桌面网关界面里显示的 WSS 连接地址：
 
 ```text
-https://xxx.com?token=替换为你的长随机token
+wss://xxx.com/ws?token=替换为你的长随机token
 ```
+
+配置文件保存在系统用户配置目录：
+
+- macOS：`~/Library/Application Support/CodexMobileGateway/config.json`
+- Windows：`%APPDATA%\CodexMobileGateway\config.json`
+
+配置文件包含 token，请不要提交到仓库或公开分享。
 
 ## 内网穿透
 
@@ -98,74 +105,13 @@ https://xxx.com?token=替换为你的长随机token
 
 Cloudflare Tunnel 的桌面端常驻、域名映射和开机启动配置，可以参考项目：[cloudflare-tunnel-desktop](https://github.com/18230/cloudflare-tunnel-desktop)。
 
-## 本地启动
-
-```bash
-cd server
-npm install
-npm run build
-CODEX_MOBILE_TOKEN='替换为你的长随机token' npm run start
-```
-
-网关默认监听：
+## 本地监听
 
 ```text
 http://127.0.0.1:8000
 ```
 
-## macOS 常驻
-
-```bash
-cd server
-npm install
-npm run build
-bin/install-launchd.sh
-```
-
-运行配置保存在项目目录内，并在安装时同步到运行目录：
-
-```text
-server/.env
-~/Library/Application Support/CodexMobileGateway/runtime/.env
-```
-
-日志位置：
-
-```text
-~/Library/Logs/CodexMobileGateway/gateway.log
-~/Library/Logs/CodexMobileGateway/gateway.err.log
-```
-
-卸载：
-
-```bash
-cd server
-bin/uninstall-launchd.sh
-```
-
-## Windows 常驻
-
-先准备配置文件：
-
-```powershell
-Copy-Item server\.env.example server\.env
-notepad server\.env
-```
-
-安装计划任务并启动：
-
-```powershell
-cd server
-powershell -ExecutionPolicy Bypass -File .\bin\install-windows-task.ps1
-```
-
-卸载：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\bin\uninstall-windows-task.ps1
-```
-
-Windows 上 `CODEX_BINARY` 需要配置为本机 Codex 可执行文件路径，或者保证 `codex` 已在 `PATH` 中。
+桌面网关默认监听 `127.0.0.1:8000`。如需公网访问，建议只通过 HTTPS/WSS 的内网穿透入口连接，不要直接暴露本机端口。
 
 ## 长连接心跳
 

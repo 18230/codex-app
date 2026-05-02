@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +32,7 @@ type notificationHandler func(JSONObject)
 type CodexClient struct {
 	cfg      AppConfig
 	child    *exec.Cmd
+	output   bytes.Buffer
 	conn     *websocket.Conn
 	nextID   int
 	stopping bool
@@ -63,6 +66,8 @@ func (c *CodexClient) Start(ctx context.Context) error {
 	listenURL := fmt.Sprintf("ws://%s:%d", c.cfg.CodexHost, c.cfg.CodexPort)
 	cmd := exec.CommandContext(ctx, c.cfg.CodexBinary, "app-server", "--listen", listenURL)
 	cmd.Env = os.Environ()
+	cmd.Stdout = &c.output
+	cmd.Stderr = &c.output
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动 Codex app-server 失败: %w", err)
 	}
@@ -255,7 +260,11 @@ func (c *CodexClient) waitChild() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.stopping {
-		c.rejectAllLocked(fmt.Errorf("Codex app-server 已退出: %s", redactSecrets(err)))
+		message := fmt.Sprintf("Codex app-server 已退出: %s", redactSecrets(err))
+		if detail := strings.TrimSpace(c.output.String()); detail != "" {
+			message = fmt.Sprintf("%s: %s", message, redactSecrets(detail))
+		}
+		c.rejectAllLocked(fmt.Errorf("%s", message))
 	}
 }
 
