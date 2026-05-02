@@ -13,9 +13,9 @@
     <key>CFBundleIdentifier</key>
     <string>work.codex.mobile.gateway</string>
     <key>CFBundleVersion</key>
-    <string>0.2.2</string>
+    <string>0.2.3</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.2</string>
+    <string>0.2.3</string>
     <key>CFBundleGetInfoString</key>
     <string>Codex Mobile Gateway</string>
     <key>CFBundleIconFile</key>

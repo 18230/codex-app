@@ -27,18 +27,20 @@ type rpcResponse struct {
 }
 
 type notificationHandler func(JSONObject)
+type lifecycleHandler func(error)
 
 // CodexClient 管理 Codex app-server 子进程和 JSON-RPC WebSocket。
 type CodexClient struct {
-	cfg      AppConfig
-	child    *exec.Cmd
-	output   bytes.Buffer
-	conn     *websocket.Conn
-	nextID   int
-	stopping bool
-	mu       sync.Mutex
-	pending  map[int]pendingRequest
-	handlers []notificationHandler
+	cfg             AppConfig
+	child           *exec.Cmd
+	output          bytes.Buffer
+	conn            *websocket.Conn
+	nextID          int
+	stopping        bool
+	mu              sync.Mutex
+	pending         map[int]pendingRequest
+	handlers        []notificationHandler
+	failureHandlers []lifecycleHandler
 }
 
 // NewCodexClient 创建 Codex 客户端。
@@ -57,6 +59,13 @@ func (c *CodexClient) OnNotification(handler notificationHandler) {
 	c.handlers = append(c.handlers, handler)
 }
 
+// OnFailure 注册 app-server 异常退出或连接断开的监听器。
+func (c *CodexClient) OnFailure(handler lifecycleHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failureHandlers = append(c.failureHandlers, handler)
+}
+
 // Start 启动 app-server 并完成 initialize 握手。
 func (c *CodexClient) Start(ctx context.Context) error {
 	c.mu.Lock()
@@ -72,7 +81,7 @@ func (c *CodexClient) Start(ctx context.Context) error {
 		return fmt.Errorf("启动 Codex app-server 失败: %w", err)
 	}
 	c.child = cmd
-	go c.waitChild()
+	go c.waitChild(cmd)
 
 	if err := c.connectWithRetry(ctx); err != nil {
 		_ = c.Stop()
@@ -120,7 +129,7 @@ func (c *CodexClient) Stop() error {
 func (c *CodexClient) IsConnected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn != nil
+	return c.conn != nil && c.child != nil
 }
 
 // Request 发送 JSON-RPC 请求并等待响应。
@@ -182,13 +191,20 @@ func (c *CodexClient) readLoop(conn *websocket.Conn) {
 		var message JSONObject
 		if err := conn.ReadJSON(&message); err != nil {
 			c.mu.Lock()
+			notifyFailure := false
+			failure := fmt.Errorf("Codex app-server 连接已关闭: %w", err)
 			if c.conn == conn {
 				c.conn = nil
 			}
 			if !c.stopping {
-				c.rejectAllLocked(fmt.Errorf("Codex app-server 连接已关闭"))
+				notifyFailure = true
+				c.rejectAllLocked(failure)
 			}
+			handlers := append([]lifecycleHandler{}, c.failureHandlers...)
 			c.mu.Unlock()
+			if notifyFailure {
+				c.notifyFailureHandlers(handlers, failure)
+			}
 			return
 		}
 		c.handleMessage(message)
@@ -252,19 +268,38 @@ func (c *CodexClient) answerServerRequest(id int, method string) {
 }
 
 // waitChild 等待子进程退出并清理等待中的请求。
-func (c *CodexClient) waitChild() {
-	if c.child == nil {
-		return
-	}
-	err := c.child.Wait()
+func (c *CodexClient) waitChild(child *exec.Cmd) {
+	err := child.Wait()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.child == child {
+		c.child = nil
+	}
+	notifyFailure := false
+	var failure error
 	if !c.stopping {
+		if c.conn != nil {
+			_ = c.conn.Close()
+			c.conn = nil
+		}
 		message := fmt.Sprintf("Codex app-server 已退出: %s", redactSecrets(err))
 		if detail := strings.TrimSpace(c.output.String()); detail != "" {
 			message = fmt.Sprintf("%s: %s", message, redactSecrets(detail))
 		}
-		c.rejectAllLocked(fmt.Errorf("%s", message))
+		failure = fmt.Errorf("%s", message)
+		notifyFailure = true
+		c.rejectAllLocked(failure)
+	}
+	handlers := append([]lifecycleHandler{}, c.failureHandlers...)
+	c.mu.Unlock()
+	if notifyFailure {
+		c.notifyFailureHandlers(handlers, failure)
+	}
+}
+
+// notifyFailureHandlers 在锁外广播生命周期异常，避免重启路径反向等待 CodexClient 锁。
+func (c *CodexClient) notifyFailureHandlers(handlers []lifecycleHandler, err error) {
+	for _, handler := range handlers {
+		handler(err)
 	}
 }
 

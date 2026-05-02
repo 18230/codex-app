@@ -24,14 +24,18 @@ type HistoryLine struct {
 
 // GatewayStatus 是桌面配置页和健康检查使用的网关状态。
 type GatewayStatus struct {
-	Running         bool   `json:"running"`
-	Gateway         string `json:"gateway"`
-	AppServer       string `json:"appServer"`
-	ThreadID        string `json:"threadId"`
-	DefaultThreadID string `json:"defaultThreadId"`
-	CWD             string `json:"cwd"`
-	ActiveTurnID    string `json:"activeTurnId"`
-	Error           string `json:"error"`
-	ConfigPath      string `json:"configPath"`
-	Timestamp       int64  `json:"timestamp"`
+	Running               bool   `json:"running"`
+	Gateway               string `json:"gateway"`
+	AppServer             string `json:"appServer"`
+	ThreadID              string `json:"threadId"`
+	DefaultThreadID       string `json:"defaultThreadId"`
+	CWD                   string `json:"cwd"`
+	ActiveTurnID          string `json:"activeTurnId"`
+	Error                 string `json:"error"`
+	ConfigPath            string `json:"configPath"`
+	HTTPRestartCount      int    `json:"httpRestartCount"`
+	AppServerRestartCount int    `json:"appServerRestartCount"`
+	AppServerRestarting   bool   `json:"appServerRestarting"`
+	AppServerNextRestart  int64  `json:"appServerNextRestart"`
+	Timestamp             int64  `json:"timestamp"`
 }

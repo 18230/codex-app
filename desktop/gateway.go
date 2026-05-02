@@ -32,24 +32,39 @@ type clientState struct {
 
 // Gateway 负责本地 HTTP/WebSocket 服务、Codex app-server 转发和线程状态。
 type Gateway struct {
-	store      *ConfigStore
-	cfg        AppConfig
-	codex      *CodexClient
-	server     *http.Server
-	clients    map[*websocket.Conn]*clientState
-	currentID  string
-	currentCWD string
-	activeTurn string
-	lastError  string
-	eventSink  eventSink
-	mu         sync.Mutex
+	store                *ConfigStore
+	cfg                  AppConfig
+	codex                *CodexClient
+	server               *http.Server
+	httpHealthy          bool
+	clients              map[*websocket.Conn]*clientState
+	currentID            string
+	currentCWD           string
+	activeTurn           string
+	lastError            string
+	eventSink            eventSink
+	watchdogCancel       context.CancelFunc
+	watchdogCtx          context.Context
+	watchdogInterval     time.Duration
+	appServerBackoffBase time.Duration
+	appServerBackoffMax  time.Duration
+	appServerBackoff     time.Duration
+	supervisorGeneration int64
+	appServerRestarting  bool
+	appServerNextRestart time.Time
+	appServerRestarts    int
+	httpRestarts         int
+	mu                   sync.Mutex
 }
 
 // NewGateway 创建网关实例。
 func NewGateway(store *ConfigStore) *Gateway {
 	return &Gateway{
-		store:   store,
-		clients: make(map[*websocket.Conn]*clientState),
+		store:                store,
+		clients:              make(map[*websocket.Conn]*clientState),
+		watchdogInterval:     15 * time.Second,
+		appServerBackoffBase: 2 * time.Second,
+		appServerBackoffMax:  5 * time.Minute,
 	}
 }
 
@@ -140,8 +155,14 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	}
 
 	ctx := context.Background()
-	codex := NewCodexClient(cfg)
-	codex.OnNotification(g.handleCodexNotification)
+	g.mu.Lock()
+	g.supervisorGeneration++
+	generation := g.supervisorGeneration
+	g.appServerBackoff = g.appServerBackoffBase
+	g.appServerRestarting = false
+	g.appServerNextRestart = time.Time{}
+	g.mu.Unlock()
+	codex := g.newCodexClient(cfg, generation)
 	if err := codex.Start(ctx); err != nil {
 		g.setError(err)
 		return g.Status(), err
@@ -161,34 +182,71 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 		return g.Status(), err
 	}
 
+	if err := g.startHTTPServer(cfg); err != nil {
+		_ = codex.Stop()
+		g.setError(err)
+		return g.Status(), err
+	}
+
+	g.mu.Lock()
+	watchdogCtx, watchdogCancel := context.WithCancel(context.Background())
+	g.watchdogCtx = watchdogCtx
+	g.watchdogCancel = watchdogCancel
+	g.mu.Unlock()
+	go g.clientHeartbeat(watchdogCtx)
+	go g.watchdogLoop(watchdogCtx)
+	g.emit("gateway:status", g.Status())
+	return g.Status(), nil
+}
+
+// httpHandler 创建 HTTP 路由，watchdog 重建服务时复用同一组处理器。
+func (g *Gateway) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", g.handleHealth)
 	mux.HandleFunc("/ws", g.handleWebSocket)
 	mux.HandleFunc("/", g.handleIndex)
+	return mux
+}
 
+// startHTTPServer 启动 HTTP/WebSocket 监听器，调用方需要保证配置已校验。
+func (g *Gateway) startHTTPServer(cfg AppConfig) error {
 	server := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler:           mux,
+		Handler:           g.httpHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
-		_ = codex.Stop()
-		g.setError(err)
-		return g.Status(), fmt.Errorf("监听端口失败: %w", err)
+		return fmt.Errorf("监听端口失败: %w", err)
 	}
-
 	g.mu.Lock()
 	g.server = server
+	g.httpHealthy = true
 	g.mu.Unlock()
-	go g.clientHeartbeat()
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			g.setError(err)
+	go g.serveHTTP(server, listener)
+	return nil
+}
+
+// newCodexClient 创建受当前 supervisor generation 保护的 app-server 客户端。
+func (g *Gateway) newCodexClient(cfg AppConfig, generation int64) *CodexClient {
+	codex := NewCodexClient(cfg)
+	codex.OnNotification(g.handleCodexNotification)
+	codex.OnFailure(func(err error) {
+		g.handleAppServerFailure(generation, err)
+	})
+	return codex
+}
+
+// serveHTTP 运行 HTTP 服务并把异常退出交给 watchdog 恢复。
+func (g *Gateway) serveHTTP(server *http.Server, listener net.Listener) {
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		g.mu.Lock()
+		if g.server == server {
+			g.httpHealthy = false
 		}
-	}()
-	g.emit("gateway:status", g.Status())
-	return g.Status(), nil
+		g.mu.Unlock()
+		g.setError(err)
+	}
 }
 
 // isTCPPortAvailable 判断内部 Codex app-server 端口是否可绑定。
@@ -218,6 +276,7 @@ func freeTCPPort(host string) (int, error) {
 // Stop 停止网关和所有子连接。
 func (g *Gateway) Stop() error {
 	g.mu.Lock()
+	watchdogCancel := g.watchdogCancel
 	server := g.server
 	codex := g.codex
 	clients := make([]*clientState, 0, len(g.clients))
@@ -225,11 +284,19 @@ func (g *Gateway) Stop() error {
 		clients = append(clients, client)
 	}
 	g.server = nil
+	g.httpHealthy = false
 	g.codex = nil
+	g.watchdogCancel = nil
+	g.watchdogCtx = nil
+	g.appServerRestarting = false
+	g.appServerNextRestart = time.Time{}
 	g.clients = make(map[*websocket.Conn]*clientState)
 	g.activeTurn = ""
 	g.mu.Unlock()
 
+	if watchdogCancel != nil {
+		watchdogCancel()
+	}
 	for _, client := range clients {
 		client.close()
 	}
@@ -746,11 +813,268 @@ func (g *Gateway) handleCodexNotification(message JSONObject) {
 	g.emit("gateway:status", g.Status())
 }
 
+// watchdogLoop 定期确认 HTTP 服务和 app-server 可用，异常时按退避策略自愈。
+func (g *Gateway) watchdogLoop(ctx context.Context) {
+	ticker := time.NewTicker(g.watchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			g.mu.Lock()
+			running := g.server != nil
+			codex := g.codex
+			g.mu.Unlock()
+			if !running {
+				return
+			}
+
+			if err := g.ensureHTTPServer(ctx); err != nil {
+				g.setError(err)
+			}
+			if ctx.Err() != nil {
+				return
+			}
+
+			if codex != nil && codex.IsConnected() {
+				g.mu.Lock()
+				g.appServerBackoff = g.appServerBackoffBase
+				g.appServerNextRestart = time.Time{}
+				g.mu.Unlock()
+				continue
+			}
+			g.mu.Lock()
+			generation := g.supervisorGeneration
+			g.mu.Unlock()
+			g.scheduleAppServerRestart(ctx, generation)
+		}
+	}
+}
+
+// handleAppServerFailure 处理 app-server 主动上报的异常，尽快进入重启流程。
+func (g *Gateway) handleAppServerFailure(generation int64, err error) {
+	g.mu.Lock()
+	if generation != g.supervisorGeneration || g.server == nil {
+		g.mu.Unlock()
+		return
+	}
+	ctx := g.watchdogCtx
+	g.mu.Unlock()
+	g.setError(err)
+	g.broadcast(JSONObject{"type": "status", "threadId": g.Status().ThreadID, "status": "app-server-disconnected"})
+	if ctx != nil {
+		g.scheduleAppServerRestart(ctx, generation)
+	}
+}
+
+// scheduleAppServerRestart 安排单次 app-server 拉起，使用 generation 防止旧实例误操作新实例。
+func (g *Gateway) scheduleAppServerRestart(ctx context.Context, generation int64) {
+	g.mu.Lock()
+	if g.server == nil || generation != g.supervisorGeneration || g.appServerRestarting {
+		g.mu.Unlock()
+		return
+	}
+	delay := g.appServerBackoff
+	if delay <= 0 {
+		delay = g.appServerBackoffBase
+	}
+	g.appServerRestarting = true
+	g.appServerNextRestart = time.Now().Add(delay)
+	g.appServerBackoff = nextWatchdogBackoff(delay, g.appServerBackoffBase, g.appServerBackoffMax)
+	g.mu.Unlock()
+	g.emit("gateway:status", g.Status())
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			g.mu.Lock()
+			if generation == g.supervisorGeneration {
+				g.appServerRestarting = false
+				g.appServerNextRestart = time.Time{}
+			}
+			g.mu.Unlock()
+			return
+		case <-timer.C:
+		}
+
+		err := g.restartAppServer(ctx, generation)
+		g.mu.Lock()
+		stillCurrent := generation == g.supervisorGeneration && g.server != nil
+		if stillCurrent {
+			g.appServerRestarting = false
+			if err == nil {
+				g.appServerBackoff = g.appServerBackoffBase
+				g.appServerNextRestart = time.Time{}
+			}
+		}
+		g.mu.Unlock()
+		if err != nil && stillCurrent {
+			g.setError(err)
+			g.scheduleAppServerRestart(ctx, generation)
+		}
+	}()
+}
+
+// ensureHTTPServer 用 TCP 探测确认 HTTP 监听还活着，失败时重建监听器。
+func (g *Gateway) ensureHTTPServer(ctx context.Context) error {
+	g.mu.Lock()
+	server := g.server
+	g.mu.Unlock()
+	if server == nil {
+		return nil
+	}
+	conn, err := net.DialTimeout("tcp", server.Addr, 2*time.Second)
+	if err == nil {
+		_ = conn.Close()
+		g.mu.Lock()
+		if g.server == server {
+			g.httpHealthy = true
+		}
+		g.mu.Unlock()
+		return nil
+	}
+	g.mu.Lock()
+	if g.server == server {
+		g.httpHealthy = false
+	}
+	g.mu.Unlock()
+	if ctx.Err() != nil {
+		return nil
+	}
+	if restartErr := g.restartHTTPServer(ctx); restartErr != nil {
+		return restartErr
+	}
+	return fmt.Errorf("HTTP 服务已由 watchdog 重启: %w", err)
+}
+
+// restartHTTPServer 在进程未退出的情况下重建 HTTP/WebSocket 监听器。
+func (g *Gateway) restartHTTPServer(ctx context.Context) error {
+	g.mu.Lock()
+	oldServer := g.server
+	cfg := g.cfg
+	if oldServer == nil {
+		g.mu.Unlock()
+		return nil
+	}
+	g.httpHealthy = false
+	g.mu.Unlock()
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = oldServer.Shutdown(shutdownCtx)
+	cancel()
+
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:           g.httpHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("watchdog 重启 HTTP 服务失败: %w", err)
+	}
+	g.mu.Lock()
+	if g.server == oldServer {
+		g.server = server
+		g.httpHealthy = true
+		g.httpRestarts++
+	}
+	g.mu.Unlock()
+	go g.serveHTTP(server, listener)
+	g.emit("gateway:status", g.Status())
+	return nil
+}
+
+// restartAppServer 重启 Codex app-server 并恢复配置中的默认会话。
+func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error {
+	g.mu.Lock()
+	if g.server == nil || generation != g.supervisorGeneration {
+		g.mu.Unlock()
+		return nil
+	}
+	oldCodex := g.codex
+	cfg := g.cfg
+	g.codex = nil
+	g.activeTurn = ""
+	g.mu.Unlock()
+
+	if oldCodex != nil {
+		_ = oldCodex.Stop()
+	}
+	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+		port, err := freeTCPPort(cfg.CodexHost)
+		if err != nil {
+			return err
+		}
+		cfg.CodexPort = port
+		_ = g.store.Save(cfg)
+	}
+
+	restartCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
+	defer cancel()
+	codex := g.newCodexClient(cfg, generation)
+	if err := codex.Start(restartCtx); err != nil {
+		return err
+	}
+
+	g.mu.Lock()
+	if g.server == nil || generation != g.supervisorGeneration {
+		g.mu.Unlock()
+		_ = codex.Stop()
+		return nil
+	}
+	g.cfg = cfg
+	g.codex = codex
+	g.currentCWD = cfg.Workspace
+	g.currentID = cfg.BoundThreadID
+	g.lastError = ""
+	g.appServerRestarts++
+	g.mu.Unlock()
+
+	if err := g.initializeThread(restartCtx); err != nil {
+		g.mu.Lock()
+		if g.codex == codex {
+			g.codex = nil
+		}
+		g.mu.Unlock()
+		_ = codex.Stop()
+		return err
+	}
+	g.broadcast(JSONObject{"type": "status", "threadId": g.Status().ThreadID, "status": "app-server-restarted"})
+	g.emit("gateway:status", g.Status())
+	return nil
+}
+
+// nextWatchdogBackoff 计算 app-server 重启退避时间，避免长期故障时高频拉起。
+func nextWatchdogBackoff(current time.Duration, base time.Duration, max time.Duration) time.Duration {
+	if base <= 0 {
+		base = 2 * time.Second
+	}
+	if max < base {
+		max = base
+	}
+	if current < base {
+		return base
+	}
+	next := current * 2
+	if next > max {
+		return max
+	}
+	return next
+}
+
 // clientHeartbeat 定期 ping 手机端连接，并关闭半开连接。
-func (g *Gateway) clientHeartbeat() {
+func (g *Gateway) clientHeartbeat(ctx context.Context) {
 	ticker := time.NewTicker(time.Duration(defaultPingIntervalMs) * time.Millisecond)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		g.mu.Lock()
 		if g.server == nil {
 			g.mu.Unlock()
@@ -839,21 +1163,36 @@ func (g *Gateway) validToken(candidate string) bool {
 // statusLocked 在持锁状态下返回状态快照。
 func (g *Gateway) statusLocked() GatewayStatus {
 	running := g.server != nil
+	gateway := "stopped"
+	if running {
+		gateway = "running"
+		if !g.httpHealthy {
+			gateway = "degraded"
+		}
+	}
 	appServer := "disconnected"
 	if g.codex != nil && g.codex.IsConnected() {
 		appServer = "connected"
 	}
+	nextAppServerRestart := int64(0)
+	if !g.appServerNextRestart.IsZero() {
+		nextAppServerRestart = g.appServerNextRestart.UnixMilli()
+	}
 	return GatewayStatus{
-		Running:         running,
-		Gateway:         mapBool(running, "running", "stopped"),
-		AppServer:       appServer,
-		ThreadID:        g.currentID,
-		DefaultThreadID: g.cfg.BoundThreadID,
-		CWD:             g.currentCWD,
-		ActiveTurnID:    g.activeTurn,
-		Error:           g.lastError,
-		ConfigPath:      g.store.Path(),
-		Timestamp:       time.Now().UnixMilli(),
+		Running:               running,
+		Gateway:               gateway,
+		AppServer:             appServer,
+		ThreadID:              g.currentID,
+		DefaultThreadID:       g.cfg.BoundThreadID,
+		CWD:                   g.currentCWD,
+		ActiveTurnID:          g.activeTurn,
+		Error:                 g.lastError,
+		ConfigPath:            g.store.Path(),
+		HTTPRestartCount:      g.httpRestarts,
+		AppServerRestartCount: g.appServerRestarts,
+		AppServerRestarting:   g.appServerRestarting,
+		AppServerNextRestart:  nextAppServerRestart,
+		Timestamp:             time.Now().UnixMilli(),
 	}
 }
 

@@ -47,13 +47,22 @@
 
 ## 下载
 
-最新版本：`v0.2.2`。发布包在 GitHub Releases 中提供：
+最新版本：`v0.2.3`。发布包在 GitHub Releases 中提供：
 
-- `CodexMobileGateway-0.2.2-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
-- `CodexMobileGateway-0.2.2-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
-- `codex-app-0.2.2.apk`：Android 手机端安装包。
+- `CodexMobileGateway-0.2.3-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
+- `CodexMobileGateway-0.2.3-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
+- `codex-app-0.2.3.apk`：Android 手机端安装包。
 
 桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
+
+## v0.2.3 更新
+
+- 桌面网关新增 HTTP/WebSocket 服务 watchdog，监听异常时会自动重建本机 HTTP 服务。
+- Codex app-server 断连或子进程异常退出时会立即触发 supervisor 重启，不再只依赖周期轮询发现。
+- app-server 重启采用指数退避，连续失败时最多退避到 5 分钟，避免长期故障下高频拉起。
+- supervisor 增加 generation 隔离和重启锁，防止旧实例迟到事件影响新实例，也避免同一故障重复触发多次重启。
+- `/health` 和桌面诊断区新增 HTTP 重启次数、Codex app-server 重启次数、是否正在重启和下次重启时间，方便长时间运行观测。
+- 网关停止时会统一取消 watchdog 和心跳协程，降低反复启停后的后台协程残留风险。
 
 ## v0.2.2 更新
 

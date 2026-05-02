@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -104,6 +105,70 @@ func TestFreeTCPPort(t *testing.T) {
 		t.Fatalf("expected allocated port to be reusable: %v", err)
 	}
 	_ = listener.Close()
+}
+
+// TestRestartHTTPServerReopensListener 验证 HTTP 服务异常关闭后可由 watchdog 路径重建。
+func TestRestartHTTPServerReopensListener(t *testing.T) {
+	workspace := t.TempDir()
+	port, err := freeTCPPort("127.0.0.1")
+	if err != nil {
+		t.Fatalf("freeTCPPort returned error: %v", err)
+	}
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(workspace, "config.json")})
+	cfg := AppConfig{
+		Workspace:   workspace,
+		Token:       "1234567890abcdef",
+		Host:        "127.0.0.1",
+		Port:        port,
+		CodexHost:   "127.0.0.1",
+		CodexPort:   defaultCodexPort,
+		CodexBinary: "codex",
+	}
+	gateway.cfg = cfg
+	if err := gateway.startHTTPServer(cfg); err != nil {
+		t.Fatalf("startHTTPServer returned error: %v", err)
+	}
+	defer func() { _ = gateway.Stop() }()
+
+	healthURL := "http://127.0.0.1:" + strconv.Itoa(port) + "/health"
+	if response, err := http.Get(healthURL); err != nil {
+		t.Fatalf("initial health check failed: %v", err)
+	} else {
+		_ = response.Body.Close()
+	}
+
+	gateway.mu.Lock()
+	oldServer := gateway.server
+	gateway.mu.Unlock()
+	if err := oldServer.Close(); err != nil {
+		t.Fatalf("close server: %v", err)
+	}
+	if err := gateway.ensureHTTPServer(context.Background()); err != nil && !strings.Contains(err.Error(), "HTTP 服务已由 watchdog 重启") {
+		t.Fatalf("ensureHTTPServer returned unexpected error: %v", err)
+	}
+	if response, err := http.Get(healthURL); err != nil {
+		t.Fatalf("health check after restart failed: %v", err)
+	} else {
+		_ = response.Body.Close()
+	}
+	if gateway.Status().Gateway != "running" {
+		t.Fatalf("expected gateway running after restart, got %s", gateway.Status().Gateway)
+	}
+}
+
+// TestNextWatchdogBackoff 验证 app-server 重启退避不会低于基础值且不会超过上限。
+func TestNextWatchdogBackoff(t *testing.T) {
+	base := 2 * time.Second
+	maxDelay := 10 * time.Second
+	if got := nextWatchdogBackoff(0, base, maxDelay); got != base {
+		t.Fatalf("expected base delay, got %s", got)
+	}
+	if got := nextWatchdogBackoff(base, base, maxDelay); got != 4*time.Second {
+		t.Fatalf("expected doubled delay, got %s", got)
+	}
+	if got := nextWatchdogBackoff(8*time.Second, base, maxDelay); got != maxDelay {
+		t.Fatalf("expected capped delay, got %s", got)
+	}
 }
 
 // TestThreadSummaries 验证 thread/list 返回能转换为桌面列表结构。

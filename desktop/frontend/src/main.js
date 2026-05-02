@@ -66,6 +66,12 @@ function websocketURL(cfg = {}) {
   }
 }
 
+function formatTimestamp(value) {
+  const timestamp = Number(value || 0);
+  if (!timestamp) return '无';
+  return new Date(timestamp).toLocaleString();
+}
+
 function render() {
   const cfg = state.draft || state.config || {};
   const status = state.status || {};
@@ -179,6 +185,8 @@ function render() {
           <dt>配置文件</dt><dd>${escapeHtml(status.configPath || '')}</dd>
           <dt>网关</dt><dd>${escapeHtml(status.gateway || 'unknown')}</dd>
           <dt>Codex</dt><dd>${escapeHtml(status.appServer || 'unknown')}</dd>
+          <dt>HTTP 重启</dt><dd>${Number(status.httpRestartCount || 0)}</dd>
+          <dt>Codex 重启</dt><dd>${Number(status.appServerRestartCount || 0)}${status.appServerRestarting ? ` · 下次 ${escapeHtml(formatTimestamp(status.appServerNextRestart))}` : ''}</dd>
           <dt>工作目录</dt><dd>${escapeHtml(status.cwd || cfg.workspace || '')}</dd>
           <dt>当前线程</dt><dd>${escapeHtml(status.threadId || '未绑定')}</dd>
         </dl>

@@ -225,6 +225,34 @@ export class GatewayStatus {
              */
             this["configPath"] = "";
         }
+        if (!("httpRestartCount" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["httpRestartCount"] = 0;
+        }
+        if (!("appServerRestartCount" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["appServerRestartCount"] = 0;
+        }
+        if (!("appServerRestarting" in $$source)) {
+            /**
+             * @member
+             * @type {boolean}
+             */
+            this["appServerRestarting"] = false;
+        }
+        if (!("appServerNextRestart" in $$source)) {
+            /**
+             * @member
+             * @type {number}
+             */
+            this["appServerNextRestart"] = 0;
+        }
         if (!("timestamp" in $$source)) {
             /**
              * @member
