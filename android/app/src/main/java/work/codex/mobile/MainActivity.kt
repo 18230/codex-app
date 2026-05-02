@@ -98,6 +98,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val APP_HEARTBEAT_INTERVAL_MS = 25_000L
@@ -404,7 +405,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
     var threadTitle by remember { mutableStateOf("无标题会话") }
     var draft by remember { mutableStateOf("") }
     var activeTurnId by remember { mutableStateOf<String?>(null) }
-    var isThinking by remember { mutableStateOf(false) }
+    var thinkingStage by remember { mutableStateOf<String?>(null) }
     var pendingThreadSwitchId by remember { mutableStateOf<String?>(null) }
     var client by remember { mutableStateOf<GatewayClient?>(null) }
     var autoConnectDone by remember { mutableStateOf(false) }
@@ -456,11 +457,19 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
      * 展示服务端错误，并为空错误提供稳定兜底，避免界面出现空白错误行。
      */
     fun appendGatewayError(rawMessage: String) {
-        isThinking = false
+        thinkingStage = null
         val message = classifyGatewayError(rawMessage)
         setAppStatus(errorStatusLabel(message), log = true)
         addDiagnostic("错误", message)
         appendOutput(LineKind.Error, message)
+    }
+
+    /**
+     * 只让当前活跃 turn 的阶段事件更新等待气泡，避免延迟事件污染界面状态。
+     */
+    fun isCurrentTurnEvent(event: JSONObject): Boolean {
+        val eventTurnId = event.optString("turnId")
+        return eventTurnId.isBlank() || activeTurnId == null || eventTurnId == activeTurnId
     }
 
     /**
@@ -558,17 +567,18 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             }
             "turn.started" -> {
                 activeTurnId = event.optString("turnId")
+                thinkingStage = "正在思考"
                 setAppStatus("正在执行", log = true)
             }
             "turn.completed" -> {
-                isThinking = false
+                thinkingStage = null
                 activeTurnId = null
                 setAppStatus("执行完成", log = true)
                 requestThreadList()
                 requestThreadList(1200L)
             }
             "delta" -> {
-                isThinking = false
+                thinkingStage = null
                 appendOutput(
                     LineKind.Assistant,
                     event.optString("text"),
@@ -576,15 +586,21 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                 )
             }
             "command.delta" -> {
-                isThinking = false
+                if (isCurrentTurnEvent(event)) thinkingStage = "正在执行命令"
                 setAppStatus("正在执行命令")
             }
             "plan.delta" -> {
-                isThinking = false
+                if (isCurrentTurnEvent(event)) thinkingStage = "正在规划"
                 setAppStatus("正在规划")
             }
-            "plan.updated" -> setAppStatus("计划已更新")
-            "file.patch" -> setAppStatus("文件变更已更新")
+            "plan.updated" -> {
+                if (isCurrentTurnEvent(event)) thinkingStage = "正在更新计划"
+                setAppStatus("计划已更新")
+            }
+            "file.patch" -> {
+                if (isCurrentTurnEvent(event)) thinkingStage = "正在处理文件变更"
+                setAppStatus("文件变更已更新")
+            }
             "status" -> setAppStatus("Codex 状态更新")
             "threads.changed" -> {
                 requestThreadList()
@@ -612,12 +628,12 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             }
             "response" -> {
                 if (!event.optBoolean("ok", true)) {
-                    isThinking = false
+                    thinkingStage = null
                     appendGatewayError(event.optString("error"))
                 }
             }
             "error" -> {
-                isThinking = false
+                thinkingStage = null
                 appendGatewayError(event.optString("message"))
             }
         }
@@ -654,16 +670,16 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
             },
             onEvent = ::handleEvent,
             onClosed = { reason ->
-                isThinking = false
+                thinkingStage = null
                 setAppStatus(reason, log = true)
             },
             onReconnecting = { reason, delayMs ->
-                isThinking = false
+                thinkingStage = null
                 setAppStatus("重连中：${delayMs / 1000} 秒后重试", log = true)
                 addDiagnostic("连接", "连接异常：$reason")
             },
             onError = { message ->
-                isThinking = false
+                thinkingStage = null
                 if (status != "重连中") setAppStatus("连接异常", log = true)
                 addDiagnostic("连接", message)
                 appendOutput(LineKind.Error, message)
@@ -792,7 +808,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                 scrollSignal = scrollNonce,
                                 hasConnection = !savedUrl.value.isNullOrBlank(),
                                 status = status,
-                                isThinking = isThinking,
+                                thinkingStage = thinkingStage,
                                 onCopy = { copyText ->
                                     // 复制动作由气泡内部执行，这里保留扩展点。
                                     addDiagnostic("消息", "已复制 ${copyText.length} 个字符")
@@ -812,7 +828,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                 activeTurnId = activeTurnId,
                                 onDraftChange = { draft = it },
                                 onInterrupt = {
-                                    isThinking = false
+                                    thinkingStage = null
                                     activeTurnId?.let {
                                         client?.send(JSONObject().put("type", "turn.interrupt").put("turnId", it))
                                     }
@@ -824,7 +840,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                                     focusManager.clearFocus()
                                     appendOutput(LineKind.User, text)
                                     val payload = if (activeTurnId == null) {
-                                        isThinking = true
+                                        thinkingStage = "正在思考"
                                         JSONObject()
                                             .put("type", "turn.start")
                                             .put("text", text)
@@ -855,7 +871,7 @@ private fun CodexMobileApp(store: SecureConnectionStore) {
                             onDisconnect = {
                                 client?.close()
                                 client = null
-                                isThinking = false
+                                thinkingStage = null
                                 setAppStatus("已断开", log = true)
                             },
                             onClearConnection = ::clearSavedConnection,
@@ -1294,7 +1310,7 @@ private fun OutputList(
     scrollSignal: Int,
     hasConnection: Boolean,
     status: String,
-    isThinking: Boolean,
+    thinkingStage: String?,
     onCopy: (String) -> Unit,
     onQuote: (String) -> Unit,
     onResend: (String) -> Unit,
@@ -1302,15 +1318,16 @@ private fun OutputList(
 ) {
     val listState = rememberLazyListState()
     val lastLine = lines.lastOrNull()
+    val hasThinkingStage = thinkingStage != null
 
-    LaunchedEffect(scrollSignal, lines.size, lastLine?.text, isThinking) {
-        if (lines.isNotEmpty() || isThinking) {
+    LaunchedEffect(scrollSignal, lines.size, lastLine?.text, thinkingStage) {
+        if (lines.isNotEmpty() || hasThinkingStage) {
             withFrameNanos { }
             listState.scrollToItem(lines.size)
         }
     }
 
-    if (lines.isEmpty() && !isThinking) {
+    if (lines.isEmpty() && !hasThinkingStage) {
         EmptyChatState(hasConnection = hasConnection, status = status, modifier = modifier)
     } else {
         LazyColumn(
@@ -1329,18 +1346,54 @@ private fun OutputList(
                     onResend = onResend,
                 )
             }
-            if (isThinking) {
+            if (thinkingStage != null) {
                 item(key = "thinking") {
-                    OutputBubble(
-                        line = OutputLine(kind = LineKind.Assistant, text = "Codex 正在思考"),
-                        onCopy = onCopy,
-                        onQuote = onQuote,
-                        onResend = onResend,
-                    )
+                    ThinkingBubble(stage = thinkingStage)
                 }
             }
             item(key = "bottom-anchor") {
                 Spacer(Modifier.height(1.dp))
+            }
+        }
+    }
+}
+
+/**
+ * 渲染可随阶段变化的等待气泡，点号独立占位以避免文字宽度跳动。
+ */
+@Composable
+private fun ThinkingBubble(stage: String) {
+    var dotCount by remember(stage) { mutableStateOf(3) }
+    LaunchedEffect(stage) {
+        dotCount = 3
+        while (true) {
+            delay(420L)
+            dotCount = if (dotCount >= 3) 1 else dotCount + 1
+        }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        Row(
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .background(Color.White, RoundedCornerShape(8.dp))
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stage,
+                color = Color(0xFF5A665F),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Box(modifier = Modifier.width(18.dp)) {
+                Text(
+                    text = ".".repeat(dotCount),
+                    color = Color(0xFF5A665F),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
         }
     }
@@ -1689,6 +1742,8 @@ private fun classifyGatewayError(rawMessage: String): String {
     return when {
         "401" in lower || "unauthorized" in lower || "token_revoked" in lower ->
             "Codex 登录态失效：电脑端 Codex 认证失败，请在电脑端重新登录后重启网关。"
+        "usagelimitexceeded" in lower || "usage limit" in lower || "credits" in lower ->
+            "Codex 用量已达上限：请在电脑端查看 Codex 用量或升级后重试。原始信息：$message"
         "token" in lower && ("缺少" in message || "invalid" in lower || "unauthorized" in lower) ->
             "连接 token 无效：请确认配置页中的连接地址是最新生成的地址。"
         "工作" in message || "目录" in message || "cwd" in lower || "path" in lower ->
@@ -1707,6 +1762,7 @@ private fun classifyGatewayError(rawMessage: String): String {
 private fun errorStatusLabel(message: String): String {
     return when {
         "登录态" in message -> "登录态失效"
+        "用量" in message -> "用量上限"
         "token" in message -> "Token 错误"
         "目录" in message -> "目录错误"
         "连接" in message -> "连接错误"

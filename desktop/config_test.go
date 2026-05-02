@@ -156,6 +156,31 @@ func TestRedactSecretsMasksTokenQuery(t *testing.T) {
 	}
 }
 
+// TestCodexErrorMessageReadsNestedError 验证 app-server 嵌套错误能透传给手机端展示。
+func TestCodexErrorMessageReadsNestedError(t *testing.T) {
+	message := codexErrorMessage(JSONObject{
+		"error": JSONObject{
+			"message":        "You've hit your usage limit. Try again later.",
+			"codexErrorInfo": "usageLimitExceeded",
+		},
+	})
+	if !strings.Contains(message, "usage limit") || !strings.Contains(message, "usageLimitExceeded") {
+		t.Fatalf("unexpected error message: %s", message)
+	}
+}
+
+// TestCodexErrorMessageRedactsSecrets 验证错误消息透传时仍会清理连接 token。
+func TestCodexErrorMessageRedactsSecrets(t *testing.T) {
+	message := codexErrorMessage(JSONObject{
+		"error": JSONObject{
+			"message": "connect wss://example.com/ws?token=1234567890abcdef failed",
+		},
+	})
+	if strings.Contains(message, "1234567890abcdef") || !strings.Contains(message, "token=<redacted>") {
+		t.Fatalf("error message leaked token: %s", message)
+	}
+}
+
 // TestResolveClientWorkspaceRestrictsToConfiguredWorkspace 验证手机端只能使用桌面配置目录。
 func TestResolveClientWorkspaceRestrictsToConfiguredWorkspace(t *testing.T) {
 	workspace := t.TempDir()

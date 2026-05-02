@@ -741,7 +741,7 @@ func (g *Gateway) handleCodexNotification(message JSONObject) {
 	case "thread/status/changed":
 		g.broadcast(JSONObject{"type": "status", "threadId": threadID, "status": params["status"]})
 	case "error", "gateway/error":
-		g.broadcast(JSONObject{"type": "error", "message": firstNonEmpty(stringField(params, "message"), "Codex 错误"), "detail": params})
+		g.broadcast(JSONObject{"type": "error", "message": codexErrorMessage(params), "detail": params})
 	}
 	g.emit("gateway:status", g.Status())
 }
@@ -977,6 +977,29 @@ func readThread(result any) JSONObject {
 func readTurn(result any) JSONObject {
 	object := jsonObject(result)
 	return jsonObject(object["turn"])
+}
+
+// codexErrorMessage 从 app-server 错误通知中提取可读信息，避免手机端只看到泛化错误。
+func codexErrorMessage(params JSONObject) string {
+	message := stringField(params, "message")
+	if message == "" {
+		message = stringField(jsonObject(params["error"]), "message")
+	}
+	if message == "" {
+		message = stringField(jsonObject(params["detail"]), "message")
+	}
+	if message == "" {
+		message = "Codex 错误"
+	}
+	code := firstNonEmpty(
+		stringField(params, "codexErrorInfo"),
+		stringField(jsonObject(params["error"]), "codexErrorInfo"),
+		stringField(jsonObject(params["detail"]), "codexErrorInfo"),
+	)
+	if code != "" && !strings.Contains(message, code) {
+		message = fmt.Sprintf("%s (%s)", message, code)
+	}
+	return redactSecrets(message)
 }
 
 // stringField 安全读取字符串字段。
