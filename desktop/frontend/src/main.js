@@ -1,5 +1,8 @@
 import './style.css';
-import {
+import {App} from '../bindings/CodexMobileGateway';
+import {Events} from '@wailsio/runtime';
+
+const {
   BindThread,
   ConnectionURL,
   GenerateToken,
@@ -10,8 +13,7 @@ import {
   SelectWorkspace,
   StartGateway,
   StopGateway
-} from '../wailsjs/go/main/App';
-import {EventsOn} from '../wailsjs/runtime/runtime';
+} = App;
 
 const state = {
   config: {},
@@ -229,8 +231,8 @@ async function boot() {
   render();
 }
 
-EventsOn('gateway:status', (status) => {
-  state.status = status;
+Events.On('gateway:status', (event) => {
+  state.status = event.data;
   render();
 });
 

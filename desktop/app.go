@@ -9,12 +9,13 @@ import (
 	"strings"
 	"sync"
 
-	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // App 是 Wails 暴露给前端的入口，负责配置读写、网关生命周期和桌面交互。
 type App struct {
-	ctx     context.Context
+	app     *application.App
+	window  *application.WebviewWindow
 	store   *ConfigStore
 	gateway *Gateway
 	mu      sync.Mutex
@@ -29,26 +30,35 @@ func NewApp() *App {
 	}
 }
 
-// startup 保存 Wails 上下文，并让配置文件在首次启动时落盘。
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
+// attachApplication 注入 Wails v3 应用实例，供事件、Dialog 和退出逻辑使用。
+func (a *App) attachApplication(app *application.App) {
+	a.app = app
 	a.gateway.SetEventSink(func(name string, data any) {
-		if a.ctx != nil {
-			wailsRuntime.EventsEmit(a.ctx, name, data)
+		if a.app != nil {
+			a.app.Event.Emit(name, data)
 		}
 	})
 	_ = a.store.Ensure()
 }
 
-// beforeClose 把关闭窗口改为隐藏窗口，保持托盘常驻语义。
-func (a *App) beforeClose(ctx context.Context) bool {
-	wailsRuntime.WindowHide(ctx)
-	return true
+// attachWindow 注入主窗口实例，供托盘菜单和前端方法控制显示。
+func (a *App) attachWindow(window *application.WebviewWindow) {
+	a.window = window
 }
 
 // shutdown 退出应用前停止网关和 Codex 子进程。
-func (a *App) shutdown(ctx context.Context) {
+func (a *App) shutdown() {
 	_ = a.gateway.Stop()
+}
+
+// ServiceStartup 符合 Wails v3 服务生命周期，确保直接测试服务时也有默认配置。
+func (a *App) ServiceStartup(ctx context.Context, options application.ServiceOptions) error {
+	return a.store.Ensure()
+}
+
+// ServiceShutdown 符合 Wails v3 服务生命周期，退出前停止网关。
+func (a *App) ServiceShutdown() error {
+	return a.gateway.Stop()
 }
 
 // GetConfig 返回当前配置和状态快照。
@@ -83,12 +93,14 @@ func (a *App) GenerateToken() (string, error) {
 
 // SelectWorkspace 打开系统目录选择框，并返回用户选择的工作目录。
 func (a *App) SelectWorkspace() (string, error) {
-	if a.ctx == nil {
+	if a.app == nil {
 		return "", fmt.Errorf("窗口尚未初始化")
 	}
-	return wailsRuntime.OpenDirectoryDialog(a.ctx, wailsRuntime.OpenDialogOptions{
-		Title: "选择 Codex 工作目录",
-	})
+	return a.app.Dialog.OpenFile().
+		SetTitle("选择 Codex 工作目录").
+		CanChooseDirectories(true).
+		CanChooseFiles(false).
+		PromptForSingleSelection()
 }
 
 // StartGateway 启动本机 Codex Mobile Gateway。
@@ -146,16 +158,17 @@ func (a *App) ConnectionURL(host string) (string, error) {
 
 // ShowWindow 从托盘菜单恢复主窗口。
 func (a *App) ShowWindow() {
-	if a.ctx != nil {
-		wailsRuntime.WindowShow(a.ctx)
-		wailsRuntime.WindowCenter(a.ctx)
+	if a.window != nil {
+		a.window.Show()
+		a.window.Center()
+		a.window.Focus()
 	}
 }
 
 // QuitApp 从托盘菜单退出应用。
 func (a *App) QuitApp() {
-	if a.ctx != nil {
-		wailsRuntime.Quit(a.ctx)
+	if a.app != nil {
+		a.app.Quit()
 	}
 }
 
