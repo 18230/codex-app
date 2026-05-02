@@ -37,9 +37,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -1232,6 +1232,10 @@ private fun CompactTextField(
     singleLine: Boolean = false,
     minLines: Int = 1,
     maxLines: Int = 1,
+    containerColor: Color = Color.White,
+    borderColor: Color = Color(0xFF7E7A82),
+    cornerRadius: androidx.compose.ui.unit.Dp = 6.dp,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
 ) {
     BasicTextField(
         value = value,
@@ -1245,9 +1249,9 @@ private fun CompactTextField(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.White, RoundedCornerShape(6.dp))
-                    .border(1.dp, Color(0xFF7E7A82), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .background(containerColor, RoundedCornerShape(cornerRadius))
+                    .border(1.dp, borderColor, RoundedCornerShape(cornerRadius))
+                    .padding(contentPadding),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 if (value.isEmpty()) {
@@ -1437,10 +1441,16 @@ private fun InputBar(
     onSend: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val hasActiveTurn = activeTurnId != null
+    val canSend = draft.isNotBlank()
+    val shouldSend = canSend
     Row(
-        modifier = modifier,
+        modifier = modifier
+            .background(Color(0xFFF7F8F6), RoundedCornerShape(24.dp))
+            .border(1.dp, Color(0xFFE3E5E1), RoundedCornerShape(24.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         CompactTextField(
             value = draft,
@@ -1448,39 +1458,47 @@ private fun InputBar(
             modifier = keyboardOnFocusModifier(
                 Modifier
                     .weight(1f)
-                    .heightIn(min = 44.dp),
+                    .heightIn(min = 42.dp),
             ),
-            placeholder = if (activeTurnId == null) "消息" else "追加",
+            placeholder = if (hasActiveTurn) "Codex 正在回复" else "消息",
             minLines = 1,
             maxLines = 3,
+            containerColor = Color.Transparent,
+            borderColor = Color.Transparent,
+            cornerRadius = 18.dp,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
         )
-        if (activeTurnId != null) {
-            IconButton(onClick = onInterrupt, modifier = Modifier.size(42.dp)) {
-                Icon(Icons.Filled.Stop, contentDescription = "停止", modifier = Modifier.size(22.dp))
-            }
-        }
-        SendActionButton(enabled = draft.isNotBlank(), onClick = onSend)
+        ChatActionButton(
+            isStopping = hasActiveTurn && !shouldSend,
+            enabled = hasActiveTurn || shouldSend,
+            onClick = if (shouldSend) onSend else onInterrupt,
+        )
     }
 }
 
 /**
- * 渲染白底发送按钮，禁用时仅降低图标对比度。
+ * 根据当前对话状态渲染发送或停止按钮，让输入栏右侧始终只有一个主操作。
  */
 @Composable
-private fun SendActionButton(enabled: Boolean, onClick: () -> Unit) {
+private fun ChatActionButton(isStopping: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val buttonColor = when {
+        !enabled -> Color(0xFFE4E6E2)
+        isStopping -> Color(0xFF232824)
+        else -> Color(0xFF111111)
+    }
+    val iconTint = if (enabled) Color.White else Color(0xFF9CA39D)
     Box(
         modifier = Modifier
-            .size(width = 52.dp, height = 44.dp)
-            .background(Color.White, RoundedCornerShape(22.dp))
-            .border(1.dp, Color(0xFFD6D6D6), RoundedCornerShape(22.dp))
+            .size(42.dp)
+            .background(buttonColor, RoundedCornerShape(21.dp))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            Icons.Filled.Send,
-            contentDescription = "发送",
-            modifier = Modifier.size(18.dp),
-            tint = if (enabled) Color(0xFF111111) else Color(0xFFB8B8B8),
+            imageVector = if (isStopping) Icons.Filled.Stop else Icons.AutoMirrored.Filled.Send,
+            contentDescription = if (isStopping) "停止" else "发送",
+            modifier = Modifier.size(if (isStopping) 19.dp else 18.dp),
+            tint = iconTint,
         )
     }
 }
