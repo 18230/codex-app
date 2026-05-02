@@ -1,0 +1,15 @@
+.DS_Store
+node_modules/
+dist/
+.env
+.env.*
+!server/.env.example
+server/node_modules/
+server/dist/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+*.iml
