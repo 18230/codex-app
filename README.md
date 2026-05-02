@@ -50,7 +50,7 @@
 
 - `CodexMobileGateway.dmg`：macOS Apple Silicon 桌面网关。
 - `CodexMobileGateway.exe`：Windows x86_64 便携版桌面网关。
-- `app-debug.apk`：Android 手机端安装包。
+- `codex-app.apk`：Android 手机端安装包。
 
 桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
 
@@ -130,5 +130,5 @@ cd android
 
 ```bash
 adb devices
-adb -s 设备序列号 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s 设备序列号 install -r app/build/outputs/apk/debug/codex-app.apk
 ```
