@@ -7,14 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 type pendingRequest struct {
@@ -30,12 +25,18 @@ type rpcResponse struct {
 type notificationHandler func(JSONObject)
 type lifecycleHandler func(error)
 
-// CodexClient 管理 Codex app-server 子进程和 JSON-RPC WebSocket。
-type CodexClient struct {
-	cfg             AppConfig
-	child           *exec.Cmd
+// CodexClient 抽象 Codex app-server 通信，mac 使用 WebSocket，Windows 使用命名管道。
+type CodexClient interface {
+	OnNotification(notificationHandler)
+	OnFailure(lifecycleHandler)
+	Start(context.Context) error
+	Stop() error
+	IsConnected() bool
+	Request(context.Context, string, any, time.Duration) (any, error)
+}
+
+type codexClientBase struct {
 	output          bytes.Buffer
-	conn            *websocket.Conn
 	nextID          int
 	stopping        bool
 	mu              sync.Mutex
@@ -45,10 +46,9 @@ type CodexClient struct {
 	logger          *GatewayLogger
 }
 
-// NewCodexClient 创建 Codex 客户端。
-func NewCodexClient(cfg AppConfig, logger *GatewayLogger) *CodexClient {
-	return &CodexClient{
-		cfg:     cfg,
+// newCodexClientBase 创建跨传输共享的 JSON-RPC 状态。
+func newCodexClientBase(logger *GatewayLogger) codexClientBase {
+	return codexClientBase{
 		nextID:  1,
 		pending: make(map[int]pendingRequest),
 		logger:  logger,
@@ -56,95 +56,38 @@ func NewCodexClient(cfg AppConfig, logger *GatewayLogger) *CodexClient {
 }
 
 // OnNotification 注册 app-server 通知监听器。
-func (c *CodexClient) OnNotification(handler notificationHandler) {
+func (c *codexClientBase) OnNotification(handler notificationHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.handlers = append(c.handlers, handler)
 }
 
 // OnFailure 注册 app-server 异常退出或连接断开的监听器。
-func (c *CodexClient) OnFailure(handler lifecycleHandler) {
+func (c *codexClientBase) OnFailure(handler lifecycleHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.failureHandlers = append(c.failureHandlers, handler)
 }
 
-// Start 启动 app-server 并完成 initialize 握手。
-func (c *CodexClient) Start(ctx context.Context) error {
+// markStarting 标记一次新的 app-server 生命周期开始。
+func (c *codexClientBase) markStarting() {
 	c.mu.Lock()
 	c.stopping = false
 	c.mu.Unlock()
-
-	listenURL := fmt.Sprintf("ws://%s:%d", c.cfg.CodexHost, c.cfg.CodexPort)
-	cmd := exec.CommandContext(ctx, c.cfg.CodexBinary, "app-server", "--listen", listenURL)
-	cmd.Env = os.Environ()
-	cmd.Stdout = io.MultiWriter(&c.output, newLogWriter(c.logger, logKindRun, "codex"))
-	cmd.Stderr = io.MultiWriter(&c.output, newLogWriter(c.logger, logKindError, "codex"))
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 Codex app-server 失败: %w", err)
-	}
-	if c.logger != nil {
-		c.logger.Run(fmt.Sprintf("Codex app-server 已启动: %s", listenURL))
-	}
-	c.child = cmd
-	go c.waitChild(cmd)
-
-	if err := c.connectWithRetry(ctx); err != nil {
-		_ = c.Stop()
-		return err
-	}
-	_, err := c.Request(ctx, "initialize", JSONObject{
-		"clientInfo": JSONObject{
-			"name":    "codex-mobile-gateway-desktop",
-			"title":   "Codex Mobile Gateway",
-			"version": "0.1.0",
-		},
-		"capabilities": JSONObject{
-			"experimentalApi":           true,
-			"optOutNotificationMethods": nil,
-		},
-	}, 30*time.Second)
-	if err != nil {
-		_ = c.Stop()
-		return err
-	}
-	return nil
 }
 
-// Stop 关闭 app-server 和 WebSocket。
-func (c *CodexClient) Stop() error {
+// markStopping 标记客户端正在主动停止，并拒绝所有等待中的请求。
+func (c *codexClientBase) markStopping() {
 	c.mu.Lock()
 	c.stopping = true
-	conn := c.conn
-	child := c.child
-	c.conn = nil
-	c.child = nil
 	c.rejectAllLocked(fmt.Errorf("CodexClient 已关闭"))
 	c.mu.Unlock()
-
-	if conn != nil {
-		_ = conn.Close()
-	}
-	if child != nil && child.Process != nil {
-		_ = child.Process.Kill()
-	}
-	return nil
 }
 
-// IsConnected 返回 app-server WebSocket 是否可用。
-func (c *CodexClient) IsConnected() bool {
+// registerRequest 注册一个等待中的 JSON-RPC 请求。
+func (c *codexClientBase) registerRequest(timeout time.Duration) (int, chan rpcResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.conn != nil && c.child != nil
-}
-
-// Request 发送 JSON-RPC 请求并等待响应。
-func (c *CodexClient) Request(ctx context.Context, method string, params any, timeout time.Duration) (any, error) {
-	c.mu.Lock()
-	if c.conn == nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("Codex app-server 尚未连接")
-	}
 	id := c.nextID
 	c.nextID++
 	ch := make(chan rpcResponse, 1)
@@ -152,28 +95,26 @@ func (c *CodexClient) Request(ctx context.Context, method string, params any, ti
 		c.mu.Lock()
 		if pending, ok := c.pending[id]; ok {
 			delete(c.pending, id)
-			pending.resolve <- rpcResponse{err: fmt.Errorf("Codex 请求超时: %s", method)}
+			pending.resolve <- rpcResponse{err: fmt.Errorf("Codex 请求超时")}
 		}
 		c.mu.Unlock()
 	})
 	c.pending[id] = pendingRequest{resolve: ch, timer: timer}
-	payload := JSONObject{"id": id, "method": method, "params": params}
-	err := c.conn.WriteJSON(payload)
-	c.mu.Unlock()
-	if err != nil {
-		c.mu.Lock()
-		if pending, ok := c.pending[id]; ok {
-			delete(c.pending, id)
-			pending.timer.Stop()
-		}
-		c.mu.Unlock()
-		if c.logger != nil {
-			c.logger.Error(fmt.Sprintf("Codex 请求发送失败: method=%s error=%v", method, err))
-		}
-		return nil, err
-	}
-	startedAt := time.Now()
+	return id, ch
+}
 
+// unregisterRequest 移除未发送成功的请求。
+func (c *codexClientBase) unregisterRequest(id int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pending, ok := c.pending[id]; ok {
+		delete(c.pending, id)
+		pending.timer.Stop()
+	}
+}
+
+// waitResponse 统一记录请求耗时和错误。
+func (c *codexClientBase) waitResponse(ctx context.Context, method string, startedAt time.Time, ch chan rpcResponse) (any, error) {
 	select {
 	case response := <-ch:
 		if c.logger != nil {
@@ -195,57 +136,12 @@ func (c *CodexClient) Request(ctx context.Context, method string, params any, ti
 	}
 }
 
-// connectWithRetry 等待 app-server 监听端口就绪。
-func (c *CodexClient) connectWithRetry(ctx context.Context) error {
-	u := url.URL{Scheme: "ws", Host: fmt.Sprintf("%s:%d", c.cfg.CodexHost, c.cfg.CodexPort)}
-	var lastErr error
-	for i := 0; i < 40; i++ {
-		conn, _, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
-		if err == nil {
-			c.mu.Lock()
-			c.conn = conn
-			c.mu.Unlock()
-			go c.readLoop(conn)
-			return nil
-		}
-		lastErr = err
-		time.Sleep(250 * time.Millisecond)
-	}
-	return fmt.Errorf("无法连接 Codex app-server: %w", lastErr)
-}
-
-// readLoop 处理 JSON-RPC 响应、通知和审批请求。
-func (c *CodexClient) readLoop(conn *websocket.Conn) {
-	for {
-		var message JSONObject
-		if err := conn.ReadJSON(&message); err != nil {
-			c.mu.Lock()
-			notifyFailure := false
-			failure := fmt.Errorf("Codex app-server 连接已关闭: %w", err)
-			if c.conn == conn {
-				c.conn = nil
-			}
-			if !c.stopping {
-				notifyFailure = true
-				c.rejectAllLocked(failure)
-			}
-			handlers := append([]lifecycleHandler{}, c.failureHandlers...)
-			c.mu.Unlock()
-			if notifyFailure {
-				c.notifyFailureHandlers(handlers, failure)
-			}
-			return
-		}
-		c.handleMessage(message)
-	}
-}
-
 // handleMessage 分发 app-server 消息。
-func (c *CodexClient) handleMessage(message JSONObject) {
+func (c *codexClientBase) handleMessage(message JSONObject, respond func(JSONObject) error) {
 	if idFloat, ok := message["id"].(float64); ok {
 		id := int(idFloat)
 		if method, hasMethod := message["method"].(string); hasMethod {
-			c.answerServerRequest(id, method)
+			c.answerServerRequest(id, method, respond)
 			return
 		}
 		c.mu.Lock()
@@ -276,7 +172,7 @@ func (c *CodexClient) handleMessage(message JSONObject) {
 }
 
 // answerServerRequest 自动接受 app-server 的权限审批请求。
-func (c *CodexClient) answerServerRequest(id int, method string) {
+func (c *codexClientBase) answerServerRequest(id int, method string, respond func(JSONObject) error) {
 	var result any
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval":
@@ -289,42 +185,22 @@ func (c *CodexClient) answerServerRequest(id int, method string) {
 	if result == nil {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		_ = c.conn.WriteJSON(JSONObject{"id": id, "result": result})
+	_ = respond(JSONObject{"id": id, "result": result})
+}
+
+// notifyFailureHandlers 在锁外广播生命周期异常，避免重启路径反向等待 CodexClient 锁。
+func (c *codexClientBase) notifyFailureHandlers(handlers []lifecycleHandler, err error) {
+	for _, handler := range handlers {
+		handler(err)
 	}
 }
 
-// waitChild 等待子进程退出并清理等待中的请求。
-func (c *CodexClient) waitChild(child *exec.Cmd) {
-	err := child.Wait()
-	c.mu.Lock()
-	if c.child == child {
-		c.child = nil
-	}
-	notifyFailure := false
-	var failure error
-	if !c.stopping {
-		if c.conn != nil {
-			_ = c.conn.Close()
-			c.conn = nil
-		}
-		message := fmt.Sprintf("Codex app-server 已退出: %s", redactSecrets(err))
-		if detail := strings.TrimSpace(c.output.String()); detail != "" {
-			message = fmt.Sprintf("%s: %s", message, redactSecrets(detail))
-		}
-		failure = fmt.Errorf("%s", message)
-		notifyFailure = true
-		c.rejectAllLocked(failure)
-	}
-	handlers := append([]lifecycleHandler{}, c.failureHandlers...)
-	c.mu.Unlock()
-	if notifyFailure {
-		if c.logger != nil {
-			c.logger.Error(failure)
-		}
-		c.notifyFailureHandlers(handlers, failure)
+// rejectAllLocked 拒绝所有等待中的请求。调用方必须持有锁。
+func (c *codexClientBase) rejectAllLocked(err error) {
+	for id, pending := range c.pending {
+		delete(c.pending, id)
+		pending.timer.Stop()
+		pending.resolve <- rpcResponse{err: err}
 	}
 }
 
@@ -360,22 +236,6 @@ func (w *logWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
-}
-
-// notifyFailureHandlers 在锁外广播生命周期异常，避免重启路径反向等待 CodexClient 锁。
-func (c *CodexClient) notifyFailureHandlers(handlers []lifecycleHandler, err error) {
-	for _, handler := range handlers {
-		handler(err)
-	}
-}
-
-// rejectAllLocked 拒绝所有等待中的请求。调用方必须持有锁。
-func (c *CodexClient) rejectAllLocked(err error) {
-	for id, pending := range c.pending {
-		delete(c.pending, id)
-		pending.timer.Stop()
-		pending.resolve <- rpcResponse{err: err}
-	}
 }
 
 // base64Text 解码 Codex 命令输出里的 base64 delta。

@@ -36,7 +36,7 @@ type Gateway struct {
 	store                *ConfigStore
 	logger               *GatewayLogger
 	cfg                  AppConfig
-	codex                *CodexClient
+	codex                CodexClient
 	server               *http.Server
 	httpHealthy          bool
 	clients              map[*websocket.Conn]*clientState
@@ -154,7 +154,7 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 		g.setError(err)
 		return g.Status(), err
 	}
-	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+	if usesCodexTCPPort() && !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
 			if g.logger != nil {
@@ -252,7 +252,7 @@ func (g *Gateway) startHTTPServer(cfg AppConfig) error {
 }
 
 // newCodexClient 创建受当前 supervisor generation 保护的 app-server 客户端。
-func (g *Gateway) newCodexClient(cfg AppConfig, generation int64) *CodexClient {
+func (g *Gateway) newCodexClient(cfg AppConfig, generation int64) CodexClient {
 	codex := NewCodexClient(cfg, g.logger)
 	codex.OnNotification(g.handleCodexNotification)
 	codex.OnFailure(func(err error) {
@@ -503,7 +503,7 @@ func (g *Gateway) initializeThread(ctx context.Context) error {
 }
 
 // listThreads 调用 app-server 获取线程列表。
-func (g *Gateway) listThreads(ctx context.Context, codex *CodexClient, cwd string) ([]ThreadSummary, error) {
+func (g *Gateway) listThreads(ctx context.Context, codex CodexClient, cwd string) ([]ThreadSummary, error) {
 	result, err := codex.Request(ctx, "thread/list", JSONObject{
 		"cwd":            cwd,
 		"limit":          50,
@@ -1160,7 +1160,7 @@ func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error 
 	if oldCodex != nil {
 		_ = oldCodex.Stop()
 	}
-	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+	if usesCodexTCPPort() && !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
 			return err
