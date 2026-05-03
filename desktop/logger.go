@@ -172,11 +172,6 @@ func defaultLogDir() string {
 			return filepath.Join(home, "Library", "Logs", configDirectoryName)
 		}
 	}
-	if runtime.GOOS == "windows" {
-		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
-			return filepath.Join(dir, configDirectoryName, "Logs")
-		}
-	}
 	if dir, err := os.UserCacheDir(); err == nil {
 		return filepath.Join(dir, configDirectoryName, "logs")
 	}

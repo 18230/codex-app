@@ -1,5 +1,3 @@
-//go:build !windows
-
 package main
 
 import (
@@ -23,7 +21,12 @@ type websocketCodexClient struct {
 	conn  *websocket.Conn
 }
 
-// newWebSocketCodexClient 创建 WebSocket 传输客户端，供 macOS 和非 Windows 平台使用。
+// NewCodexClient 创建 macOS WebSocket 传输客户端。
+func NewCodexClient(cfg AppConfig, logger *GatewayLogger) CodexClient {
+	return newWebSocketCodexClient(cfg, logger)
+}
+
+// newWebSocketCodexClient 创建 WebSocket 传输客户端，供 macOS 桌面网关使用。
 func newWebSocketCodexClient(cfg AppConfig, logger *GatewayLogger) *websocketCodexClient {
 	return &websocketCodexClient{
 		codexClientBase: newCodexClientBase(logger),

@@ -4,6 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WAILS_BIN="${WAILS_BIN:-$(go env GOPATH)/bin/wails3}"
+if [[ ! -x "$WAILS_BIN" ]]; then
+  echo "找不到 wails3：$WAILS_BIN" >&2
+  echo "可通过 WAILS_BIN=/path/to/wails3 指定。" >&2
+  exit 1
+fi
+export PATH="$(dirname "$WAILS_BIN"):$PATH"
 
 cd "$PROJECT_DIR"
 "$WAILS_BIN" task darwin:package ARCH=arm64

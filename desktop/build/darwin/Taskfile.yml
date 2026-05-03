@@ -9,7 +9,7 @@ vars:
   # KEYCHAIN_PROFILE: "my-notarize-profile"
   # ENTITLEMENTS: "build/darwin/entitlements.plist"
 
-  # Docker image for cross-compilation (used when building on non-macOS)
+  # Docker image for cross-compilation (used when building on non-macOS hosts)
   CROSS_IMAGE: wails-cross
 
 tasks:
@@ -53,7 +53,7 @@ tasks:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
 
   build:docker:
-    summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)
+    summary: Cross-compiles for macOS using Docker (for non-macOS hosts)
     internal: true
     deps:
       - task: common:build:frontend
@@ -115,7 +115,7 @@ tasks:
       - rm "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"
 
   build:universal:lipo:go:
-    summary: Creates universal binary using wails3 tool lipo (Linux/Windows)
+    summary: Creates universal binary using wails3 tool lipo on non-macOS hosts
     internal: true
     cmds:
       - wails3 tool lipo -output "{{.BIN_DIR}}/{{.APP_NAME}}" -input "{{.BIN_DIR}}/{{.APP_NAME}}-amd64" -input "{{.BIN_DIR}}/{{.APP_NAME}}-arm64"

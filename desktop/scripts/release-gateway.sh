@@ -7,7 +7,7 @@ usage() {
   ./scripts/release-gateway.sh [tag]
 
 说明：
-  只发布桌面网关包，不构建或上传 Android APK。
+  只发布 macOS 桌面网关包，不构建或上传 Android APK。
   tag 为空时默认使用 GitHub latest release。
 
 示例：
@@ -68,16 +68,10 @@ fi
 
 cd "$PROJECT_DIR"
 PATH="$(dirname "$WAILS_BIN"):$PATH" "$SCRIPT_DIR/package-mac.sh"
-PATH="$(dirname "$WAILS_BIN"):$PATH" "$WAILS_BIN" task windows:build ARCH=amd64
 
 DMG_SOURCE="$PROJECT_DIR/bin/CodexMobileGateway.dmg"
-EXE_SOURCE="$PROJECT_DIR/bin/CodexMobileGateway.exe"
 if [[ ! -f "$DMG_SOURCE" ]]; then
   echo "DMG 未生成：$DMG_SOURCE" >&2
-  exit 1
-fi
-if [[ ! -f "$EXE_SOURCE" ]]; then
-  echo "EXE 未生成：$EXE_SOURCE" >&2
   exit 1
 fi
 
@@ -85,13 +79,10 @@ TMP_DIR="$(mktemp -d /tmp/codex-gateway-release.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 DMG_ASSET="$TMP_DIR/CodexMobileGateway-${VERSION}-darwin-arm64.dmg"
-EXE_ASSET="$TMP_DIR/CodexMobileGateway-${VERSION}-windows-amd64.exe"
 cp "$DMG_SOURCE" "$DMG_ASSET"
-cp "$EXE_SOURCE" "$EXE_ASSET"
 
 cd "$REPO_DIR"
-gh release upload "$TAG" "$DMG_ASSET" "$EXE_ASSET" --clobber
+gh release upload "$TAG" "$DMG_ASSET" --clobber
 
 echo "已发布桌面网关包到 GitHub Release：$TAG"
 echo "  $(basename "$DMG_ASSET")"
-echo "  $(basename "$EXE_ASSET")"

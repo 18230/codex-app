@@ -76,26 +76,6 @@ func TestResolveCodexBinaryAcceptsExecutablePath(t *testing.T) {
 	}
 }
 
-// TestWindowsCodexExecutableFromText 验证 Windows 自动查找能从提示文本中提取真实 exe 路径。
-func TestWindowsCodexExecutableFromText(t *testing.T) {
-	input := "Codex 可执行文件位置是： `C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.429.3425.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe`"
-	expected := "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.429.3425.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe"
-	if got := windowsCodexExecutableFromText(input); got != expected {
-		t.Fatalf("expected %q, got %q", expected, got)
-	}
-}
-
-// TestWindowsStoreCodexPathDetection 验证 Windows Store 包内路径会被识别为不可直接执行。
-func TestWindowsStoreCodexPathDetection(t *testing.T) {
-	input := "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.429.3425.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe"
-	if !isWindowsStorePackagePath(input) {
-		t.Fatalf("expected Windows Store package path to be detected")
-	}
-	if got := windowsExecutableName(input); got != "codex.exe" {
-		t.Fatalf("expected executable name codex.exe, got %q", got)
-	}
-}
-
 // TestValidateConfigTargetsChecksCodexBinary 验证保存和启动前会检查 Codex 可执行文件真实可用。
 func TestValidateConfigTargetsChecksCodexBinary(t *testing.T) {
 	tempDir := t.TempDir()

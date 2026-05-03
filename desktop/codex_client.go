@@ -25,7 +25,7 @@ type rpcResponse struct {
 type notificationHandler func(JSONObject)
 type lifecycleHandler func(error)
 
-// CodexClient 抽象 Codex app-server 通信，mac 使用 WebSocket，Windows 使用命名管道。
+// CodexClient 抽象 Codex app-server 通信，当前桌面网关仅支持 macOS WebSocket 模式。
 type CodexClient interface {
 	OnNotification(notificationHandler)
 	OnFailure(lifecycleHandler)

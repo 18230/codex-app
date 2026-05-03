@@ -154,7 +154,7 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 		g.setError(err)
 		return g.Status(), err
 	}
-	if usesCodexTCPPort() && !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
 			if g.logger != nil {
@@ -1160,7 +1160,7 @@ func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error 
 	if oldCodex != nil {
 		_ = oldCodex.Stop()
 	}
-	if usesCodexTCPPort() && !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
+	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
 			return err

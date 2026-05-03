@@ -2,7 +2,7 @@
 
 本项目提供一个自用 Codex 手机端入口：
 
-- `desktop`：Go + Wails v3 桌面网关，监听本机端口，负责鉴权、连接 Codex app-server、转发实时输出和托盘常驻。
+- `desktop`：Go + Wails v3 macOS 桌面网关，监听本机端口，负责鉴权、连接 Codex app-server、转发实时输出和托盘常驻。
 - `android`：Android 原生 Kotlin 客户端，通过 WebSocket 连接 `https://xxx.com`。
 
 ## 界面预览
@@ -50,7 +50,6 @@
 最新版本：`v0.2.4`。发布包在 GitHub Releases 中提供：
 
 - `CodexMobileGateway-0.2.4-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
-- `CodexMobileGateway-0.2.4-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
 - `codex-app-0.2.4.apk`：Android 手机端安装包。
 
 桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
@@ -90,7 +89,7 @@
 
 ## 桌面网关
 
-桌面版位于 `desktop`，是当前唯一推荐的本地网关实现。首次启动会自动生成 token，`CODEX_THREAD_ID` 不需要手动填写，启动网关后在界面中刷新线程列表并选择要绑定的会话即可。
+桌面版位于 `desktop`，目前仅支持 macOS Apple Silicon，是当前唯一推荐的本地网关实现。首次启动会自动生成 token，`CODEX_THREAD_ID` 不需要手动填写，启动网关后在界面中刷新线程列表并选择要绑定的会话即可。
 
 桌面版基于 Wails v3，使用原生统一 System Tray API：关闭主窗口只会隐藏应用，网关仍可常驻运行；托盘菜单提供显示窗口、启动网关、停止网关和退出。
 
@@ -103,24 +102,21 @@ cd desktop
 ./scripts/package-mac.sh
 ```
 
-只发布桌面网关到现有 GitHub Release：
+只发布 macOS 桌面网关到现有 GitHub Release：
 
 ```bash
 cd desktop
 ./scripts/release-gateway.sh v0.2.4
 ```
 
-不传 tag 时会自动使用 GitHub latest release。脚本只构建并上传 `CodexMobileGateway-版本-darwin-arm64.dmg` 和 `CodexMobileGateway-版本-windows-amd64.exe`，不会构建或上传 Android APK。
+不传 tag 时会自动使用 GitHub latest release。脚本只构建并上传 `CodexMobileGateway-版本-darwin-arm64.dmg`，不会构建或上传 Android APK。
 
 产物位置：
 
 ```text
 desktop/bin/CodexMobileGateway.dmg
-desktop/bin/CodexMobileGateway.exe
 android/app/build/outputs/apk/debug/codex-app.apk
 ```
-
-Windows 便携版通过 GitHub Actions 构建，产物名为 `CodexMobileGateway.exe`。第一版未做代码签名，系统可能提示安全确认。
 
 ## 配置
 
@@ -140,7 +136,6 @@ wss://xxx.com/ws?token=替换为你的长随机token
 配置文件保存在系统用户配置目录：
 
 - macOS：`~/Library/Application Support/CodexMobileGateway/config.json`
-- Windows：`%APPDATA%\CodexMobileGateway\config.json`
 
 配置文件包含 token，请不要提交到仓库或公开分享。
 
@@ -149,7 +144,6 @@ wss://xxx.com/ws?token=替换为你的长随机token
 桌面网关日志按日期和类型写入系统日志目录：
 
 - macOS：`~/Library/Logs/CodexMobileGateway`
-- Windows：`%LOCALAPPDATA%\CodexMobileGateway\Logs`
 
 日志文件按类型拆分：
 

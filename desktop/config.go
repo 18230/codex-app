@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 )
@@ -24,8 +23,6 @@ const (
 	configFileName          = "config.json"
 	defaultCodexBinaryValue = "codex"
 )
-
-var windowsExecutablePathPattern = regexp.MustCompile(`(?i)([a-z]:\\[^\r\n` + "`" + `"'<>|?*]+?\.exe)`)
 
 // AppConfig 是桌面网关持久化配置，字段保持简单以方便迁移和手动排查。
 type AppConfig struct {
@@ -204,17 +201,11 @@ func defaultCodexBinary() string {
 	return defaultCodexBinaryValue
 }
 
-// ResolveCodexBinary 尽量解析 Codex 可执行文件真实路径，兼容 macOS GUI 环境和 Windows 安装目录。
+// ResolveCodexBinary 尽量解析 Codex 可执行文件真实路径，兼容 macOS GUI 环境 PATH 缺失。
 func ResolveCodexBinary(input string) (string, error) {
-	input = normalizeCodexBinaryInput(input)
+	input = strings.TrimSpace(input)
 	if input == "" {
 		input = defaultCodexBinaryValue
-	}
-	if runtime.GOOS == "windows" && isWindowsStorePackagePath(input) {
-		if path, err := resolveWindowsAppExecutionAlias(windowsExecutableName(input)); err == nil {
-			return path, nil
-		}
-		return "", fmt.Errorf("Windows Store Codex 包内路径不可直接执行，请开启 Codex 应用执行别名后重新自动查找: %s", input)
 	}
 	if filepath.IsAbs(input) || strings.ContainsAny(input, `/\`) {
 		if err := validateExecutable(input); err != nil {
@@ -223,21 +214,11 @@ func ResolveCodexBinary(input string) (string, error) {
 		return input, nil
 	}
 	if path, err := exec.LookPath(input); err == nil {
-		if runtime.GOOS != "windows" || !isWindowsStorePackagePath(path) {
-			return path, nil
-		}
-		if alias, err := resolveWindowsAppExecutionAlias(windowsExecutableName(path)); err == nil {
-			return alias, nil
-		}
+		return path, nil
 	}
 	for _, candidate := range codexBinaryCandidates(input) {
 		if err := validateExecutable(candidate); err == nil {
 			return candidate, nil
-		}
-	}
-	if runtime.GOOS == "windows" {
-		if path, err := resolveWindowsAppExecutionAlias(windowsExecutableName(input)); err == nil {
-			return path, nil
 		}
 	}
 	if path, err := resolveFromLoginShell(input); err == nil {
@@ -246,47 +227,9 @@ func ResolveCodexBinary(input string) (string, error) {
 	return "", fmt.Errorf("未找到 Codex 可执行文件: %s", input)
 }
 
-// normalizeCodexBinaryInput 清理用户复制的 Windows 诊断文本，避免把整句说明当作文件路径。
-func normalizeCodexBinaryInput(input string) string {
-	input = strings.TrimSpace(input)
-	if runtime.GOOS == "windows" {
-		if path := windowsCodexExecutableFromText(input); path != "" {
-			return path
-		}
-		return strings.Trim(input, " \t\r\n`\"'")
-	}
-	return input
-}
-
-// windowsCodexExecutableFromText 从 Windows 提示文本中提取真正的 codex.exe 路径。
-func windowsCodexExecutableFromText(input string) string {
-	matches := windowsExecutablePathPattern.FindStringSubmatch(strings.TrimSpace(input))
-	if len(matches) < 2 {
-		return ""
-	}
-	return strings.Trim(matches[1], " \t\r\n`\"'")
-}
-
-// isWindowsStorePackagePath 判断路径是否指向受保护的 WindowsApps 包目录。
-func isWindowsStorePackagePath(path string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(path, "/", `\`))
-	return strings.Contains(normalized, `\windowsapps\openai.codex_`) && strings.HasSuffix(normalized, `\app\resources\codex.exe`)
-}
-
-// codexBinaryCandidates 返回各平台常见的 Codex 安装位置。
+// codexBinaryCandidates 返回 macOS 常见的 Codex 安装位置。
 func codexBinaryCandidates(name string) []string {
 	home, _ := os.UserHomeDir()
-	if runtime.GOOS == "windows" {
-		localAppData := os.Getenv("LOCALAPPDATA")
-		programFiles := os.Getenv("ProgramFiles")
-		executableName := windowsExecutableName(name)
-		return []string{
-			filepath.Join(localAppData, "Microsoft", "WindowsApps", executableName),
-			filepath.Join(home, "AppData", "Local", "Microsoft", "WindowsApps", executableName),
-			filepath.Join(localAppData, "Programs", "Codex", executableName),
-			filepath.Join(programFiles, "Codex", executableName),
-		}
-	}
 	return []string{
 		"/Applications/Codex.app/Contents/Resources/codex",
 		"/opt/homebrew/bin/" + name,
@@ -296,38 +239,8 @@ func codexBinaryCandidates(name string) []string {
 	}
 }
 
-// windowsExecutableName 补齐 Windows 可执行文件扩展名，避免候选路径变成 codex.exe.exe。
-func windowsExecutableName(name string) string {
-	name = strings.TrimSpace(name)
-	if index := strings.LastIndexAny(name, `/\`); index >= 0 {
-		name = name[index+1:]
-	}
-	if strings.EqualFold(filepath.Ext(name), ".exe") {
-		return name
-	}
-	return name + ".exe"
-}
-
-// resolveWindowsAppExecutionAlias 返回 Windows Store 应用暴露给当前用户的可执行别名。
-func resolveWindowsAppExecutionAlias(executableName string) (string, error) {
-	if runtime.GOOS != "windows" {
-		return "", fmt.Errorf("非 Windows 系统不使用应用执行别名")
-	}
-	for _, candidate := range codexBinaryCandidates(executableName) {
-		if strings.Contains(strings.ToLower(strings.ReplaceAll(candidate, "/", `\`)), `\microsoft\windowsapps\`) {
-			if err := validateExecutable(candidate); err == nil {
-				return candidate, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("未找到 Windows 应用执行别名: %s", executableName)
-}
-
 // resolveFromLoginShell 通过用户登录 shell 获取 PATH，解决 macOS 双击启动应用时 PATH 不完整的问题。
 func resolveFromLoginShell(name string) (string, error) {
-	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("Windows 不使用登录 shell 查找")
-	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/zsh"
@@ -355,7 +268,7 @@ func validateExecutable(path string) error {
 	if stat.IsDir() {
 		return fmt.Errorf("Codex 可执行文件不能是目录: %s", path)
 	}
-	if runtime.GOOS != "windows" && stat.Mode()&0o111 == 0 {
+	if stat.Mode()&0o111 == 0 {
 		return fmt.Errorf("Codex 文件不可执行: %s", path)
 	}
 	return nil
@@ -387,11 +300,6 @@ func validateWorkspacePath(input string) (string, error) {
 
 // configPath 返回符合平台习惯的配置路径。
 func configPath() string {
-	if runtime.GOOS == "windows" {
-		if dir := os.Getenv("APPDATA"); dir != "" {
-			return filepath.Join(dir, configDirectoryName, configFileName)
-		}
-	}
 	if runtime.GOOS == "darwin" {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, "Library", "Application Support", configDirectoryName, configFileName)
