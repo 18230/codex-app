@@ -193,9 +193,9 @@ func (a *App) ListLogDays() ([]string, error) {
 	return a.logger.ListDays()
 }
 
-// ReadLogEntries 读取指定日期和类型的前 100 条日志。
+// ReadLogEntries 读取指定日期和类型的最新 50 条日志。
 func (a *App) ReadLogEntries(day string, kind string) ([]LogEntry, error) {
-	return a.logger.ReadEntries(day, kind, 100)
+	return a.logger.ReadEntries(day, kind, defaultLogLimit)
 }
 
 // ShowWindow 从托盘菜单恢复主窗口。

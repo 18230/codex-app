@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	logKindRun     = "run"
-	logKindError   = "error"
-	logKindRequest = "request"
-	logTimeLayout  = "2006-01-02 15:04:05"
-	logDateLayout  = "2006-01-02"
+	logKindRun      = "run"
+	logKindError    = "error"
+	logKindRequest  = "request"
+	logTimeLayout   = "2006-01-02 15:04:05"
+	logDateLayout   = "2006-01-02"
+	defaultLogLimit = 50
 )
 
 // GatewayLogger 按日期和类型写入网关日志，避免运行日志、错误日志和请求日志互相混杂。
@@ -84,7 +85,7 @@ func (l *GatewayLogger) ListDays() ([]string, error) {
 	return result, nil
 }
 
-// ReadEntries 读取指定日期和类型的前 limit 条日志，limit 小于等于 0 时使用 100 条。
+// ReadEntries 读取指定日期和类型的最新 limit 条日志，limit 小于等于 0 时使用 50 条。
 func (l *GatewayLogger) ReadEntries(day string, kind string, limit int) ([]LogEntry, error) {
 	if l == nil {
 		return nil, nil
@@ -96,8 +97,8 @@ func (l *GatewayLogger) ReadEntries(day string, kind string, limit int) ([]LogEn
 	if !isValidLogKind(kind) {
 		return nil, fmt.Errorf("日志类型无效: %s", kind)
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 100
+	if limit <= 0 || limit > defaultLogLimit {
+		limit = defaultLogLimit
 	}
 	file, err := os.Open(l.path(kind, day))
 	if os.IsNotExist(err) {
@@ -108,17 +109,24 @@ func (l *GatewayLogger) ReadEntries(day string, kind string, limit int) ([]LogEn
 	}
 	defer file.Close()
 
-	entries := make([]LogEntry, 0, limit)
+	lines := make([]string, 0, limit)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		if len(entries) >= limit {
-			break
+		line := scanner.Text()
+		if len(lines) < limit {
+			lines = append(lines, line)
+		} else {
+			copy(lines, lines[1:])
+			lines[len(lines)-1] = line
 		}
-		entries = append(entries, parseLogLine(scanner.Text()))
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("读取日志内容失败: %w", err)
+	}
+	entries := make([]LogEntry, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		entries = append(entries, parseLogLine(lines[i]))
 	}
 	return entries, nil
 }

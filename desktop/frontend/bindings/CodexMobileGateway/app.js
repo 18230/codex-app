@@ -101,7 +101,7 @@ export function QuitApp() {
 }
 
 /**
- * ReadLogEntries 读取指定日期和类型的前 100 条日志。
+ * ReadLogEntries 读取指定日期和类型的最新 50 条日志。
  * @param {string} day
  * @param {string} kind
  * @returns {$CancellablePromise<$models.LogEntry[]>}
