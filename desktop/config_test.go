@@ -85,6 +85,17 @@ func TestWindowsCodexExecutableFromText(t *testing.T) {
 	}
 }
 
+// TestWindowsStoreCodexPathDetection 验证 Windows Store 包内路径会被识别为不可直接执行。
+func TestWindowsStoreCodexPathDetection(t *testing.T) {
+	input := "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.429.3425.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe"
+	if !isWindowsStorePackagePath(input) {
+		t.Fatalf("expected Windows Store package path to be detected")
+	}
+	if got := windowsExecutableName(input); got != "codex.exe" {
+		t.Fatalf("expected executable name codex.exe, got %q", got)
+	}
+}
+
 // TestValidateConfigTargetsChecksCodexBinary 验证保存和启动前会检查 Codex 可执行文件真实可用。
 func TestValidateConfigTargetsChecksCodexBinary(t *testing.T) {
 	tempDir := t.TempDir()
@@ -101,6 +112,25 @@ func TestValidateConfigTargetsChecksCodexBinary(t *testing.T) {
 	}
 	if _, err := ValidateConfigTargets(AppConfig{Workspace: tempDir, CodexBinary: filepath.Join(tempDir, "missing")}); err == nil {
 		t.Fatalf("expected missing codex binary to be rejected")
+	}
+}
+
+// TestGatewayStopResetsRuntimeStatus 验证停止网关会清理运行态和重启标记。
+func TestGatewayStopResetsRuntimeStatus(t *testing.T) {
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(t.TempDir(), "config.json")}, nil)
+	gateway.activeTurn = "turn-1"
+	gateway.appServerRestarting = true
+	gateway.appServerNextRestart = time.Now().Add(time.Minute)
+
+	if err := gateway.Stop(); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	status := gateway.Status()
+	if status.Running || status.Gateway != "stopped" || status.AppServer != "disconnected" {
+		t.Fatalf("unexpected stopped status: %+v", status)
+	}
+	if status.ActiveTurnID != "" || status.AppServerRestarting || status.AppServerNextRestart != 0 {
+		t.Fatalf("expected runtime state to be reset: %+v", status)
 	}
 }
 
