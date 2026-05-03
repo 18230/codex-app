@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -23,6 +24,8 @@ const (
 	configFileName          = "config.json"
 	defaultCodexBinaryValue = "codex"
 )
+
+var windowsExecutablePathPattern = regexp.MustCompile(`(?i)([a-z]:\\[^\r\n` + "`" + `"'<>|?*]+?\.exe)`)
 
 // AppConfig 是桌面网关持久化配置，字段保持简单以方便迁移和手动排查。
 type AppConfig struct {
@@ -203,7 +206,7 @@ func defaultCodexBinary() string {
 
 // ResolveCodexBinary 尽量解析 Codex 可执行文件真实路径，兼容 macOS GUI 环境和 Windows 安装目录。
 func ResolveCodexBinary(input string) (string, error) {
-	input = strings.TrimSpace(input)
+	input = normalizeCodexBinaryInput(input)
 	if input == "" {
 		input = defaultCodexBinaryValue
 	}
@@ -221,10 +224,36 @@ func ResolveCodexBinary(input string) (string, error) {
 			return candidate, nil
 		}
 	}
+	if runtime.GOOS == "windows" {
+		if path, err := resolveFromWindowsAppxPackage(); err == nil {
+			return path, nil
+		}
+	}
 	if path, err := resolveFromLoginShell(input); err == nil {
 		return path, nil
 	}
 	return "", fmt.Errorf("未找到 Codex 可执行文件: %s", input)
+}
+
+// normalizeCodexBinaryInput 清理用户复制的 Windows 诊断文本，避免把整句说明当作文件路径。
+func normalizeCodexBinaryInput(input string) string {
+	input = strings.TrimSpace(input)
+	if runtime.GOOS == "windows" {
+		if path := windowsCodexExecutableFromText(input); path != "" {
+			return path
+		}
+		return strings.Trim(input, " \t\r\n`\"'")
+	}
+	return input
+}
+
+// windowsCodexExecutableFromText 从 Windows 提示文本中提取真正的 codex.exe 路径。
+func windowsCodexExecutableFromText(input string) string {
+	matches := windowsExecutablePathPattern.FindStringSubmatch(strings.TrimSpace(input))
+	if len(matches) < 2 {
+		return ""
+	}
+	return strings.Trim(matches[1], " \t\r\n`\"'")
 }
 
 // codexBinaryCandidates 返回各平台常见的 Codex 安装位置。
@@ -233,10 +262,16 @@ func codexBinaryCandidates(name string) []string {
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		programFiles := os.Getenv("ProgramFiles")
-		return []string{
-			filepath.Join(localAppData, "Programs", "Codex", name+".exe"),
-			filepath.Join(programFiles, "Codex", name+".exe"),
+		executableName := windowsExecutableName(name)
+		candidates := []string{
+			filepath.Join(localAppData, "Programs", "Codex", executableName),
+			filepath.Join(programFiles, "Codex", executableName),
 		}
+		if programFiles != "" {
+			matches, _ := filepath.Glob(filepath.Join(programFiles, "WindowsApps", "OpenAI.Codex_*", "app", "resources", executableName))
+			candidates = append(candidates, matches...)
+		}
+		return candidates
 	}
 	return []string{
 		"/Applications/Codex.app/Contents/Resources/codex",
@@ -245,6 +280,35 @@ func codexBinaryCandidates(name string) []string {
 		filepath.Join(home, ".local", "bin", name),
 		filepath.Join(home, "go", "bin", name),
 	}
+}
+
+// windowsExecutableName 补齐 Windows 可执行文件扩展名，避免候选路径变成 codex.exe.exe。
+func windowsExecutableName(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	if strings.EqualFold(filepath.Ext(name), ".exe") {
+		return name
+	}
+	return name + ".exe"
+}
+
+// resolveFromWindowsAppxPackage 读取 Windows 应用包安装位置，覆盖 Store 版本不在 PATH 中的场景。
+func resolveFromWindowsAppxPackage() (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", fmt.Errorf("非 Windows 系统不使用 Appx 查找")
+	}
+	const script = `$pkg = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1; if ($pkg) { $path = Join-Path $pkg.InstallLocation 'app\resources\codex.exe'; if (Test-Path -LiteralPath $path -PathType Leaf) { [Console]::Out.Write($path) } }`
+	output, err := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(output))
+	if path == "" {
+		return "", fmt.Errorf("Windows Appx 未返回 Codex 路径")
+	}
+	if err := validateExecutable(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // resolveFromLoginShell 通过用户登录 shell 获取 PATH，解决 macOS 双击启动应用时 PATH 不完整的问题。
