@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -351,5 +352,22 @@ func TestRequestLogMiddlewareKeepsWebSocketUpgrade(t *testing.T) {
 		_ = conn.Close()
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for server websocket")
+	}
+}
+
+// TestIsRoutineClientDisconnect 验证移动端常见断连不会被归类为网关错误。
+func TestIsRoutineClientDisconnect(t *testing.T) {
+	routineErrors := []error{
+		fmt.Errorf("read tcp 127.0.0.1:8000->127.0.0.1:65211: use of closed network connection"),
+		fmt.Errorf("read tcp 127.0.0.1:8000->127.0.0.1:65211: connection reset by peer"),
+		fmt.Errorf("unexpected EOF"),
+	}
+	for _, err := range routineErrors {
+		if !isRoutineClientDisconnect(err) {
+			t.Fatalf("expected routine disconnect: %v", err)
+		}
+	}
+	if isRoutineClientDisconnect(fmt.Errorf("invalid character '{' after top-level value")) {
+		t.Fatal("protocol parse errors should remain error logs")
 	}
 }

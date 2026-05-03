@@ -579,8 +579,13 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 		for {
 			var message JSONObject
 			if err := conn.ReadJSON(&message); err != nil {
-				if g.logger != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					g.logger.Error(fmt.Sprintf("读取手机端消息失败: remote=%s error=%v", conn.RemoteAddr(), err))
+				if g.logger != nil {
+					logMessage := fmt.Sprintf("手机端连接中断: remote=%s error=%v", conn.RemoteAddr(), err)
+					if isRoutineClientDisconnect(err) {
+						g.logger.Run(logMessage)
+					} else {
+						g.logger.Error(fmt.Sprintf("读取手机端消息失败: remote=%s error=%v", conn.RemoteAddr(), err))
+					}
 				}
 				return
 			}
@@ -605,6 +610,38 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 			}
 		}
 	}()
+}
+
+// isRoutineClientDisconnect 判断手机端锁屏、切后台、网络切换等常见断连，避免把正常移动端生命周期写成错误。
+func isRoutineClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if websocket.IsCloseError(
+		err,
+		websocket.CloseNormalClosure,
+		websocket.CloseGoingAway,
+		websocket.CloseNoStatusReceived,
+		websocket.CloseAbnormalClosure,
+	) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	routineFragments := []string{
+		"use of closed network connection",
+		"connection reset by peer",
+		"broken pipe",
+		"unexpected eof",
+		"eof",
+		"client closed",
+		"going away",
+	}
+	for _, fragment := range routineFragments {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleClientMessage 处理 Android 客户端协议。
