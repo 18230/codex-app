@@ -103,6 +103,15 @@ cd desktop
 ./scripts/package-mac.sh
 ```
 
+只发布桌面网关到现有 GitHub Release：
+
+```bash
+cd desktop
+./scripts/release-gateway.sh v0.2.4
+```
+
+不传 tag 时会自动使用 GitHub latest release。脚本只构建并上传 `CodexMobileGateway-版本-darwin-arm64.dmg` 和 `CodexMobileGateway-版本-windows-amd64.exe`，不会构建或上传 Android APK。
+
 产物位置：
 
 ```text
