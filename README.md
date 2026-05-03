@@ -58,9 +58,10 @@
 ## v0.2.4 更新
 
 - 桌面网关新增按日期拆分的运行、错误和请求日志，便于排查 app-server、HTTP 和 WebSocket 状态。
-- 桌面端新增日志页，可直接查看最近日志日期、切换日志类型并刷新前 100 条记录。
+- 桌面端新增日志页，可直接查看最近日志日期、切换日志类型并按最新时间优先显示最新 50 条记录。
 - Codex app-server 标准输出和错误输出会写入日志，同时继续保留原有输出缓存。
 - 请求发送失败、超时取消和 Codex RPC 返回错误时会记录脱敏后的摘要，避免泄露 token 和正文内容。
+- 手机端锁屏、切后台或网络切换导致的 WebSocket 正常断连会归入运行日志，避免误判为错误。
 
 ## v0.2.3 更新
 
@@ -133,6 +134,21 @@ wss://xxx.com/ws?token=替换为你的长随机token
 - Windows：`%APPDATA%\CodexMobileGateway\config.json`
 
 配置文件包含 token，请不要提交到仓库或公开分享。
+
+## 日志
+
+桌面网关日志按日期和类型写入系统日志目录：
+
+- macOS：`~/Library/Logs/CodexMobileGateway`
+- Windows：`%LOCALAPPDATA%\CodexMobileGateway\Logs`
+
+日志文件按类型拆分：
+
+- `run-YYYY-MM-DD.log`：运行日志，包括网关启动停止、手机端连接断开和 Codex app-server 标准输出。
+- `error-YYYY-MM-DD.log`：错误日志，包括鉴权失败、请求处理失败、Codex RPC 错误和 app-server 异常。
+- `request-YYYY-MM-DD.log`：请求日志，包括 HTTP/WebSocket 摘要和网关到 Codex app-server 的 RPC 摘要。
+
+桌面端“日志”选项卡会按最新时间优先展示指定日期、指定类型的最新 50 条日志。日志写入前会做 token 脱敏。
 
 ## 内网穿透
 
