@@ -11,5 +11,6 @@ export {
     AppConfig,
     AppSnapshot,
     GatewayStatus,
+    LogEntry,
     ThreadSummary
 } from "./models.js";

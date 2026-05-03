@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -41,14 +42,16 @@ type CodexClient struct {
 	pending         map[int]pendingRequest
 	handlers        []notificationHandler
 	failureHandlers []lifecycleHandler
+	logger          *GatewayLogger
 }
 
 // NewCodexClient 创建 Codex 客户端。
-func NewCodexClient(cfg AppConfig) *CodexClient {
+func NewCodexClient(cfg AppConfig, logger *GatewayLogger) *CodexClient {
 	return &CodexClient{
 		cfg:     cfg,
 		nextID:  1,
 		pending: make(map[int]pendingRequest),
+		logger:  logger,
 	}
 }
 
@@ -75,10 +78,13 @@ func (c *CodexClient) Start(ctx context.Context) error {
 	listenURL := fmt.Sprintf("ws://%s:%d", c.cfg.CodexHost, c.cfg.CodexPort)
 	cmd := exec.CommandContext(ctx, c.cfg.CodexBinary, "app-server", "--listen", listenURL)
 	cmd.Env = os.Environ()
-	cmd.Stdout = &c.output
-	cmd.Stderr = &c.output
+	cmd.Stdout = io.MultiWriter(&c.output, newLogWriter(c.logger, logKindRun, "codex"))
+	cmd.Stderr = io.MultiWriter(&c.output, newLogWriter(c.logger, logKindError, "codex"))
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动 Codex app-server 失败: %w", err)
+	}
+	if c.logger != nil {
+		c.logger.Run(fmt.Sprintf("Codex app-server 已启动: %s", listenURL))
 	}
 	c.child = cmd
 	go c.waitChild(cmd)
@@ -155,13 +161,36 @@ func (c *CodexClient) Request(ctx context.Context, method string, params any, ti
 	err := c.conn.WriteJSON(payload)
 	c.mu.Unlock()
 	if err != nil {
+		c.mu.Lock()
+		if pending, ok := c.pending[id]; ok {
+			delete(c.pending, id)
+			pending.timer.Stop()
+		}
+		c.mu.Unlock()
+		if c.logger != nil {
+			c.logger.Error(fmt.Sprintf("Codex 请求发送失败: method=%s error=%v", method, err))
+		}
 		return nil, err
 	}
+	startedAt := time.Now()
 
 	select {
 	case response := <-ch:
+		if c.logger != nil {
+			duration := time.Since(startedAt).Round(time.Millisecond)
+			if response.err != nil {
+				c.logger.Request(fmt.Sprintf("codex method=%s status=error duration=%s", method, duration))
+				c.logger.Error(fmt.Sprintf("Codex 请求失败: method=%s error=%v", method, response.err))
+			} else {
+				c.logger.Request(fmt.Sprintf("codex method=%s status=ok duration=%s", method, duration))
+			}
+		}
 		return response.result, response.err
 	case <-ctx.Done():
+		if c.logger != nil {
+			c.logger.Request(fmt.Sprintf("codex method=%s status=context_done duration=%s", method, time.Since(startedAt).Round(time.Millisecond)))
+			c.logger.Error(fmt.Sprintf("Codex 请求被取消: method=%s error=%v", method, ctx.Err()))
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -292,8 +321,45 @@ func (c *CodexClient) waitChild(child *exec.Cmd) {
 	handlers := append([]lifecycleHandler{}, c.failureHandlers...)
 	c.mu.Unlock()
 	if notifyFailure {
+		if c.logger != nil {
+			c.logger.Error(failure)
+		}
 		c.notifyFailureHandlers(handlers, failure)
 	}
+}
+
+type logWriter struct {
+	logger *GatewayLogger
+	kind   string
+	prefix string
+}
+
+// newLogWriter 把子进程输出逐行写入网关日志。
+func newLogWriter(logger *GatewayLogger, kind string, prefix string) io.Writer {
+	return &logWriter{logger: logger, kind: kind, prefix: prefix}
+}
+
+// Write 实现 io.Writer，用于接收 Codex app-server 标准输出和错误输出。
+func (w *logWriter) Write(p []byte) (int, error) {
+	if w.logger == nil {
+		return len(p), nil
+	}
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		message := line
+		if w.prefix != "" {
+			message = w.prefix + " " + message
+		}
+		if w.kind == logKindError {
+			w.logger.Error(message)
+		} else {
+			w.logger.Run(message)
+		}
+	}
+	return len(p), nil
 }
 
 // notifyFailureHandlers 在锁外广播生命周期异常，避免重启路径反向等待 CodexClient 锁。

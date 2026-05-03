@@ -114,7 +114,7 @@ func TestRestartHTTPServerReopensListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("freeTCPPort returned error: %v", err)
 	}
-	gateway := NewGateway(&ConfigStore{path: filepath.Join(workspace, "config.json")})
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(workspace, "config.json")}, nil)
 	cfg := AppConfig{
 		Workspace:   workspace,
 		Token:       "1234567890abcdef",
@@ -193,7 +193,7 @@ func TestThreadSummaries(t *testing.T) {
 // TestGatewayStatusDoesNotExposeConnectionURL 验证状态快照不会回显带 token 的连接地址。
 func TestGatewayStatusDoesNotExposeConnectionURL(t *testing.T) {
 	tempDir := t.TempDir()
-	gateway := NewGateway(&ConfigStore{path: filepath.Join(tempDir, "config.json")})
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(tempDir, "config.json")}, nil)
 	gateway.cfg = AppConfig{
 		Workspace:             tempDir,
 		Token:                 "1234567890abcdef",
@@ -250,7 +250,7 @@ func TestCodexErrorMessageRedactsSecrets(t *testing.T) {
 func TestResolveClientWorkspaceRestrictsToConfiguredWorkspace(t *testing.T) {
 	workspace := t.TempDir()
 	otherWorkspace := t.TempDir()
-	gateway := NewGateway(&ConfigStore{path: filepath.Join(workspace, "config.json")})
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(workspace, "config.json")}, nil)
 	gateway.cfg = AppConfig{Workspace: workspace}
 	gateway.currentCWD = workspace
 
@@ -321,5 +321,35 @@ func TestClientStateSerializesConcurrentSends(t *testing.T) {
 		if stringField(message, "type") != "test" {
 			t.Fatalf("unexpected message: %#v", message)
 		}
+	}
+}
+
+// TestRequestLogMiddlewareKeepsWebSocketUpgrade 验证请求日志中间件不会破坏 WebSocket 升级。
+func TestRequestLogMiddlewareKeepsWebSocketUpgrade(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	serverConn := make(chan *websocket.Conn, 1)
+	gateway := NewGateway(&ConfigStore{path: filepath.Join(t.TempDir(), "config.json")}, nil)
+	server := httptest.NewServer(gateway.requestLogMiddleware(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(response, request, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		serverConn <- conn
+	})))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	clientConn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial websocket through middleware: %v", err)
+	}
+	defer clientConn.Close()
+
+	select {
+	case conn := <-serverConn:
+		_ = conn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for server websocket")
 	}
 }

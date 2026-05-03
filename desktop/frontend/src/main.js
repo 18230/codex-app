@@ -9,6 +9,8 @@ const {
   GenerateToken,
   GetConfig,
   HealthCheck,
+  ListLogDays,
+  ReadLogEntries,
   ListThreads,
   SaveConfig,
   SelectWorkspace,
@@ -21,6 +23,10 @@ const state = {
   draft: null,
   status: {},
   threads: [],
+  logDays: [],
+  logEntries: [],
+  activeLogDate: '',
+  activeLogKind: 'run',
   activeTab: 'config',
   message: '',
   messageKind: '',
@@ -92,6 +98,7 @@ function render() {
       <nav class="tabs" role="tablist" aria-label="网关设置">
         <button id="tabConfig" class="tab ${state.activeTab === 'config' ? 'active' : ''}" role="tab" aria-selected="${state.activeTab === 'config'}">基础配置</button>
         <button id="tabThreads" class="tab ${state.activeTab === 'threads' ? 'active' : ''}" role="tab" aria-selected="${state.activeTab === 'threads'}">会话列表</button>
+        <button id="tabLogs" class="tab ${state.activeTab === 'logs' ? 'active' : ''}" role="tab" aria-selected="${state.activeTab === 'logs'}">日志</button>
       </nav>
 
       ${state.activeTab === 'config' ? `
@@ -152,7 +159,7 @@ function render() {
             <button id="health">健康检查</button>
           </div>
         </section>
-      ` : `
+      ` : state.activeTab === 'threads' ? `
         <section class="panel tab-panel">
           <div class="section-heading">
             <div>
@@ -177,6 +184,42 @@ function render() {
             `).join('')}
           </div>
         </section>
+      ` : `
+        <section class="panel tab-panel">
+          <div class="section-heading">
+            <div>
+              <div class="section-title">日志</div>
+              <p>${escapeHtml(status.logDir || '日志目录未初始化')}</p>
+            </div>
+            <button id="refreshLogs">刷新日志</button>
+          </div>
+          <div class="log-toolbar">
+            <label>
+              <span>日期</span>
+              <select id="logDate">
+                ${state.logDays.length === 0
+                  ? '<option value="">暂无日志</option>'
+                  : state.logDays.map(day => `<option value="${escapeHtml(day)}" ${day === state.activeLogDate ? 'selected' : ''}>${escapeHtml(day)}</option>`).join('')}
+              </select>
+            </label>
+            <div>
+              <span>类型</span>
+              <div class="segmented">
+                ${logKindButton('run', '运行')}
+                ${logKindButton('error', '错误')}
+                ${logKindButton('request', '请求')}
+              </div>
+            </div>
+          </div>
+          <div class="log-list">
+            ${state.logEntries.length === 0 ? '<div class="empty">暂无日志记录。</div>' : state.logEntries.map(entry => `
+              <div class="log-entry">
+                <time>${escapeHtml(entry.timestamp || '')}</time>
+                <pre>${escapeHtml(entry.message || '')}</pre>
+              </div>
+            `).join('')}
+          </div>
+        </section>
       `}
 
       <section class="panel diagnostics">
@@ -189,6 +232,7 @@ function render() {
           <dt>Codex 重启</dt><dd>${Number(status.appServerRestartCount || 0)}${status.appServerRestarting ? ` · 下次 ${escapeHtml(formatTimestamp(status.appServerNextRestart))}` : ''}</dd>
           <dt>工作目录</dt><dd>${escapeHtml(status.cwd || cfg.workspace || '')}</dd>
           <dt>当前线程</dt><dd>${escapeHtml(status.threadId || '未绑定')}</dd>
+          <dt>日志目录</dt><dd>${escapeHtml(status.logDir || '')}</dd>
         </dl>
       </section>
     </main>
@@ -199,6 +243,7 @@ function render() {
 function bindEvents() {
   document.querySelector('#tabConfig')?.addEventListener('click', () => switchTab('config'));
   document.querySelector('#tabThreads')?.addEventListener('click', () => switchTab('threads'));
+  document.querySelector('#tabLogs')?.addEventListener('click', () => switchTab('logs'));
   document.querySelectorAll('input').forEach(input => {
     input.addEventListener('input', syncDraftFromForm);
     input.addEventListener('change', syncDraftFromForm);
@@ -238,6 +283,19 @@ function bindEvents() {
     render();
   });
   document.querySelector('#refreshThreads')?.addEventListener('click', refreshThreads);
+  document.querySelector('#refreshLogs')?.addEventListener('click', refreshLogs);
+  document.querySelector('#logDate')?.addEventListener('change', async (event) => {
+    state.activeLogDate = event.target.value;
+    await refreshLogEntries();
+    render();
+  });
+  document.querySelectorAll('.log-kind').forEach(button => {
+    button.addEventListener('click', async () => {
+      state.activeLogKind = button.dataset.kind;
+      await refreshLogEntries();
+      render();
+    });
+  });
   document.querySelector('#copyUrl')?.addEventListener('click', copyConnectionURL);
   document.querySelector('#copyWssUrl')?.addEventListener('click', copyWebSocketURL);
   document.querySelectorAll('.bind-thread').forEach(button => {
@@ -253,6 +311,8 @@ async function switchTab(tab) {
   state.activeTab = tab;
   if (tab === 'threads' && state.status?.running) {
     await refreshThreadsSilently();
+  } else if (tab === 'logs') {
+    await refreshLogsSilently();
   }
   render();
 }
@@ -358,6 +418,34 @@ async function refreshThreadsSilently() {
   }
 }
 
+async function refreshLogs() {
+  try {
+    await refreshLogsSilently();
+    state.message = `已刷新 ${state.logEntries.length} 条日志`;
+    state.messageKind = 'success';
+  } catch (error) {
+    state.message = error.toString();
+    state.messageKind = 'error';
+  }
+  render();
+}
+
+async function refreshLogsSilently() {
+  state.logDays = await ListLogDays();
+  if (!state.activeLogDate || !state.logDays.includes(state.activeLogDate)) {
+    state.activeLogDate = state.logDays[0] || '';
+  }
+  await refreshLogEntries();
+}
+
+async function refreshLogEntries() {
+  if (!state.activeLogDate) {
+    state.logEntries = [];
+    return;
+  }
+  state.logEntries = await ReadLogEntries(state.activeLogDate, state.activeLogKind);
+}
+
 function scheduleThreadRefresh(delay = 0) {
   if (state.refreshTimer) {
     window.clearTimeout(state.refreshTimer);
@@ -405,6 +493,10 @@ function copyIcon() {
   `;
 }
 
+function logKindButton(kind, label) {
+  return `<button class="log-kind ${state.activeLogKind === kind ? 'active' : ''}" data-kind="${kind}" type="button">${label}</button>`;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -419,6 +511,7 @@ async function boot() {
     const snapshot = await GetConfig();
     state.config = snapshot.config;
     state.status = snapshot.status;
+    await refreshLogsSilently();
   } catch (error) {
     state.message = error.toString();
     state.messageKind = 'error';

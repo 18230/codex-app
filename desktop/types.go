@@ -38,4 +38,11 @@ type GatewayStatus struct {
 	AppServerRestarting   bool   `json:"appServerRestarting"`
 	AppServerNextRestart  int64  `json:"appServerNextRestart"`
 	Timestamp             int64  `json:"timestamp"`
+	LogDir                string `json:"logDir"`
+}
+
+// LogEntry 是桌面日志页展示的一行日志。
+type LogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Message   string `json:"message"`
 }

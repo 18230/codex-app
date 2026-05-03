@@ -260,6 +260,13 @@ export class GatewayStatus {
              */
             this["timestamp"] = 0;
         }
+        if (!("logDir" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["logDir"] = "";
+        }
 
         Object.assign(this, $$source);
     }
@@ -272,6 +279,44 @@ export class GatewayStatus {
     static createFrom($$source = {}) {
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         return new GatewayStatus(/** @type {Partial<GatewayStatus>} */($$parsedSource));
+    }
+}
+
+/**
+ * LogEntry 是桌面日志页展示的一行日志。
+ */
+export class LogEntry {
+    /**
+     * Creates a new LogEntry instance.
+     * @param {Partial<LogEntry>} [$$source = {}] - The source object to create the LogEntry.
+     */
+    constructor($$source = {}) {
+        if (!("timestamp" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["timestamp"] = "";
+        }
+        if (!("message" in $$source)) {
+            /**
+             * @member
+             * @type {string}
+             */
+            this["message"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new LogEntry instance from a string or object.
+     * @param {any} [$$source = {}]
+     * @returns {LogEntry}
+     */
+    static createFrom($$source = {}) {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new LogEntry(/** @type {Partial<LogEntry>} */($$parsedSource));
     }
 }
 

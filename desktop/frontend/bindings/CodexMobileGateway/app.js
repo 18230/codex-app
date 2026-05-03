@@ -73,12 +73,22 @@ export function HealthCheck() {
 }
 
 /**
+ * ListLogDays 返回已有日志日期，供前端日志选项卡选择。
+ * @returns {$CancellablePromise<string[]>}
+ */
+export function ListLogDays() {
+    return $Call.ByID(1295584698).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType2($result);
+    }));
+}
+
+/**
  * ListThreads 读取当前工作目录下的 Codex 线程列表。
  * @returns {$CancellablePromise<$models.ThreadSummary[]>}
  */
 export function ListThreads() {
     return $Call.ByID(1090132042).then(/** @type {($result: any) => any} */(($result) => {
-        return $$createType3($result);
+        return $$createType4($result);
     }));
 }
 
@@ -88,6 +98,18 @@ export function ListThreads() {
  */
 export function QuitApp() {
     return $Call.ByID(3730234565);
+}
+
+/**
+ * ReadLogEntries 读取指定日期和类型的前 100 条日志。
+ * @param {string} day
+ * @param {string} kind
+ * @returns {$CancellablePromise<$models.LogEntry[]>}
+ */
+export function ReadLogEntries(day, kind) {
+    return $Call.ByID(2878607551, day, kind).then(/** @type {($result: any) => any} */(($result) => {
+        return $$createType6($result);
+    }));
 }
 
 /**
@@ -149,5 +171,8 @@ export function StopGateway() {
 // Private type creation functions
 const $$createType0 = $models.GatewayStatus.createFrom;
 const $$createType1 = $models.AppSnapshot.createFrom;
-const $$createType2 = $models.ThreadSummary.createFrom;
-const $$createType3 = $Create.Array($$createType2);
+const $$createType2 = $Create.Array($Create.Any);
+const $$createType3 = $models.ThreadSummary.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $models.LogEntry.createFrom;
+const $$createType6 = $Create.Array($$createType5);

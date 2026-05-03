@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -33,6 +34,7 @@ type clientState struct {
 // Gateway 负责本地 HTTP/WebSocket 服务、Codex app-server 转发和线程状态。
 type Gateway struct {
 	store                *ConfigStore
+	logger               *GatewayLogger
 	cfg                  AppConfig
 	codex                *CodexClient
 	server               *http.Server
@@ -58,9 +60,10 @@ type Gateway struct {
 }
 
 // NewGateway 创建网关实例。
-func NewGateway(store *ConfigStore) *Gateway {
+func NewGateway(store *ConfigStore, logger *GatewayLogger) *Gateway {
 	return &Gateway{
 		store:                store,
+		logger:               logger,
 		clients:              make(map[*websocket.Conn]*clientState),
 		watchdogInterval:     15 * time.Second,
 		appServerBackoffBase: 2 * time.Second,
@@ -132,12 +135,18 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	if g.server != nil {
 		status := g.statusLocked()
 		g.mu.Unlock()
+		if g.logger != nil {
+			g.logger.Run("启动网关请求被忽略: 网关已运行")
+		}
 		return status, nil
 	}
 	g.mu.Unlock()
 
 	cfg, err := g.store.Load()
 	if err != nil {
+		if g.logger != nil {
+			g.logger.Error(err)
+		}
 		return g.Status(), err
 	}
 	cfg, err = ValidateConfigTargets(cfg)
@@ -148,10 +157,19 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	if !isTCPPortAvailable(cfg.CodexHost, cfg.CodexPort) {
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
+			if g.logger != nil {
+				g.logger.Error(err)
+			}
 			return g.Status(), err
+		}
+		if g.logger != nil {
+			g.logger.Run(fmt.Sprintf("Codex app-server 端口已切换: old=%d new=%d", cfg.CodexPort, port))
 		}
 		cfg.CodexPort = port
 		_ = g.store.Save(cfg)
+	}
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("正在启动网关: host=%s port=%d cwd=%s", cfg.Host, cfg.Port, cfg.Workspace))
 	}
 
 	ctx := context.Background()
@@ -196,6 +214,9 @@ func (g *Gateway) Start() (GatewayStatus, error) {
 	go g.clientHeartbeat(watchdogCtx)
 	go g.watchdogLoop(watchdogCtx)
 	g.emit("gateway:status", g.Status())
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("网关已启动: http=%s:%d codex=%s:%d", cfg.Host, cfg.Port, cfg.CodexHost, cfg.CodexPort))
+	}
 	return g.Status(), nil
 }
 
@@ -205,7 +226,7 @@ func (g *Gateway) httpHandler() http.Handler {
 	mux.HandleFunc("/health", g.handleHealth)
 	mux.HandleFunc("/ws", g.handleWebSocket)
 	mux.HandleFunc("/", g.handleIndex)
-	return mux
+	return g.requestLogMiddleware(mux)
 }
 
 // startHTTPServer 启动 HTTP/WebSocket 监听器，调用方需要保证配置已校验。
@@ -224,12 +245,15 @@ func (g *Gateway) startHTTPServer(cfg AppConfig) error {
 	g.httpHealthy = true
 	g.mu.Unlock()
 	go g.serveHTTP(server, listener)
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("HTTP 服务已监听: %s", server.Addr))
+	}
 	return nil
 }
 
 // newCodexClient 创建受当前 supervisor generation 保护的 app-server 客户端。
 func (g *Gateway) newCodexClient(cfg AppConfig, generation int64) *CodexClient {
-	codex := NewCodexClient(cfg)
+	codex := NewCodexClient(cfg, g.logger)
 	codex.OnNotification(g.handleCodexNotification)
 	codex.OnFailure(func(err error) {
 		g.handleAppServerFailure(generation, err)
@@ -246,7 +270,62 @@ func (g *Gateway) serveHTTP(server *http.Server, listener net.Listener) {
 		}
 		g.mu.Unlock()
 		g.setError(err)
+		if g.logger != nil {
+			g.logger.Error(fmt.Sprintf("HTTP 服务异常退出: %v", err))
+		}
 	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+// Unwrap 暴露底层 ResponseWriter，保留标准库 ResponseController 能力。
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+// WriteHeader 记录 HTTP 状态码，供请求日志写入简洁摘要。
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Hijack 透传 WebSocket 升级所需的连接接管能力。
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("底层 ResponseWriter 不支持连接接管")
+	}
+	return hijacker.Hijack()
+}
+
+// Flush 透传流式响应刷新能力，避免中间件改变原有响应行为。
+func (r *statusRecorder) Flush() {
+	flusher, ok := r.ResponseWriter.(http.Flusher)
+	if ok {
+		flusher.Flush()
+	}
+}
+
+// requestLogMiddleware 记录 HTTP 请求摘要，刻意不写入 query，避免泄露 token。
+func (g *Gateway) requestLogMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		startedAt := time.Now()
+		recorder := &statusRecorder{ResponseWriter: response, status: http.StatusOK}
+		next.ServeHTTP(recorder, request)
+		if g.logger != nil {
+			g.logger.Request(fmt.Sprintf(
+				"http method=%s path=%s status=%d remote=%s duration=%s",
+				request.Method,
+				request.URL.Path,
+				recorder.status,
+				request.RemoteAddr,
+				time.Since(startedAt).Round(time.Millisecond),
+			))
+		}
+	})
 }
 
 // isTCPPortAvailable 判断内部 Codex app-server 端口是否可绑定。
@@ -275,6 +354,9 @@ func freeTCPPort(host string) (int, error) {
 
 // Stop 停止网关和所有子连接。
 func (g *Gateway) Stop() error {
+	if g.logger != nil {
+		g.logger.Run("正在停止网关")
+	}
 	g.mu.Lock()
 	watchdogCancel := g.watchdogCancel
 	server := g.server
@@ -309,6 +391,9 @@ func (g *Gateway) Stop() error {
 		_ = codex.Stop()
 	}
 	g.emit("gateway:status", g.Status())
+	if g.logger != nil {
+		g.logger.Run("网关已停止")
+	}
 	return nil
 }
 
@@ -452,6 +537,9 @@ func (g *Gateway) handleIndex(response http.ResponseWriter, request *http.Reques
 // handleWebSocket 校验 token 后接入手机端 WebSocket。
 func (g *Gateway) handleWebSocket(response http.ResponseWriter, request *http.Request) {
 	if request.URL.Path != "/ws" || !g.validToken(request.URL.Query().Get("token")) {
+		if g.logger != nil {
+			g.logger.Error(fmt.Sprintf("WebSocket 鉴权失败: remote=%s", request.RemoteAddr))
+		}
 		http.Error(response, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -472,6 +560,9 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 	g.clients[conn] = client
 	ready := JSONObject{"type": "ready", "threadId": g.currentID, "cwd": g.currentCWD}
 	g.mu.Unlock()
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("手机端已连接: remote=%s", conn.RemoteAddr()))
+	}
 	go client.writeLoop()
 	client.sendJSON(ready)
 
@@ -481,10 +572,16 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 			delete(g.clients, conn)
 			g.mu.Unlock()
 			client.close()
+			if g.logger != nil {
+				g.logger.Run(fmt.Sprintf("手机端已断开: remote=%s", conn.RemoteAddr()))
+			}
 		}()
 		for {
 			var message JSONObject
 			if err := conn.ReadJSON(&message); err != nil {
+				if g.logger != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					g.logger.Error(fmt.Sprintf("读取手机端消息失败: remote=%s error=%v", conn.RemoteAddr(), err))
+				}
 				return
 			}
 			g.mu.Lock()
@@ -492,8 +589,19 @@ func (g *Gateway) attachClient(conn *websocket.Conn) {
 				state.lastSeenAt = time.Now()
 			}
 			g.mu.Unlock()
+			messageType := stringField(message, "type")
+			requestID := stringField(message, "id")
+			if g.logger != nil {
+				g.logger.Request(fmt.Sprintf("ws inbound type=%s requestId=%s remote=%s", messageType, requestID, conn.RemoteAddr()))
+			}
 			if err := g.handleClientMessage(client, message); err != nil {
+				if g.logger != nil {
+					g.logger.Request(fmt.Sprintf("ws outbound type=response requestId=%s status=error remote=%s", requestID, conn.RemoteAddr()))
+					g.logger.Error(fmt.Sprintf("手机端请求处理失败: type=%s requestId=%s error=%v", messageType, requestID, err))
+				}
 				client.sendJSON(JSONObject{"type": "response", "ok": false, "error": redactSecrets(err)})
+			} else if g.logger != nil && requestID != "" {
+				g.logger.Request(fmt.Sprintf("ws handled type=%s requestId=%s status=ok remote=%s", messageType, requestID, conn.RemoteAddr()))
 			}
 		}
 	}()
@@ -854,6 +962,9 @@ func (g *Gateway) watchdogLoop(ctx context.Context) {
 
 // handleAppServerFailure 处理 app-server 主动上报的异常，尽快进入重启流程。
 func (g *Gateway) handleAppServerFailure(generation int64, err error) {
+	if g.logger != nil {
+		g.logger.Error(fmt.Sprintf("Codex app-server 异常: %v", err))
+	}
 	g.mu.Lock()
 	if generation != g.supervisorGeneration || g.server == nil {
 		g.mu.Unlock()
@@ -883,6 +994,9 @@ func (g *Gateway) scheduleAppServerRestart(ctx context.Context, generation int64
 	g.appServerNextRestart = time.Now().Add(delay)
 	g.appServerBackoff = nextWatchdogBackoff(delay, g.appServerBackoffBase, g.appServerBackoffMax)
 	g.mu.Unlock()
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("已安排 Codex app-server 重启: delay=%s", delay))
+	}
 	g.emit("gateway:status", g.Status())
 
 	go func() {
@@ -984,11 +1098,17 @@ func (g *Gateway) restartHTTPServer(ctx context.Context) error {
 	g.mu.Unlock()
 	go g.serveHTTP(server, listener)
 	g.emit("gateway:status", g.Status())
+	if g.logger != nil {
+		g.logger.Run(fmt.Sprintf("HTTP 服务已由 watchdog 重启: %s", server.Addr))
+	}
 	return nil
 }
 
 // restartAppServer 重启 Codex app-server 并恢复配置中的默认会话。
 func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error {
+	if g.logger != nil {
+		g.logger.Run("正在重启 Codex app-server")
+	}
 	g.mu.Lock()
 	if g.server == nil || generation != g.supervisorGeneration {
 		g.mu.Unlock()
@@ -1007,6 +1127,9 @@ func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error 
 		port, err := freeTCPPort(cfg.CodexHost)
 		if err != nil {
 			return err
+		}
+		if g.logger != nil {
+			g.logger.Run(fmt.Sprintf("Codex app-server 重启端口已切换: old=%d new=%d", cfg.CodexPort, port))
 		}
 		cfg.CodexPort = port
 		_ = g.store.Save(cfg)
@@ -1044,6 +1167,9 @@ func (g *Gateway) restartAppServer(ctx context.Context, generation int64) error 
 	}
 	g.broadcast(JSONObject{"type": "status", "threadId": g.Status().ThreadID, "status": "app-server-restarted"})
 	g.emit("gateway:status", g.Status())
+	if g.logger != nil {
+		g.logger.Run("Codex app-server 已重启")
+	}
 	return nil
 }
 
@@ -1193,6 +1319,7 @@ func (g *Gateway) statusLocked() GatewayStatus {
 		AppServerRestarting:   g.appServerRestarting,
 		AppServerNextRestart:  nextAppServerRestart,
 		Timestamp:             time.Now().UnixMilli(),
+		LogDir:                g.logger.Directory(),
 	}
 }
 
@@ -1201,6 +1328,9 @@ func (g *Gateway) setError(err error) {
 	g.mu.Lock()
 	g.lastError = redactSecrets(err)
 	g.mu.Unlock()
+	if g.logger != nil {
+		g.logger.Error(err)
+	}
 	g.emit("gateway:status", g.Status())
 }
 

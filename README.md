@@ -47,13 +47,20 @@
 
 ## 下载
 
-最新版本：`v0.2.3`。发布包在 GitHub Releases 中提供：
+最新版本：`v0.2.4`。发布包在 GitHub Releases 中提供：
 
-- `CodexMobileGateway-0.2.3-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
-- `CodexMobileGateway-0.2.3-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
-- `codex-app-0.2.3.apk`：Android 手机端安装包。
+- `CodexMobileGateway-0.2.4-darwin-arm64.dmg`：macOS Apple Silicon 桌面网关。
+- `CodexMobileGateway-0.2.4-windows-amd64.exe`：Windows x86_64 便携版桌面网关。
+- `codex-app-0.2.4.apk`：Android 手机端安装包。
 
 桌面网关第一次启动会自动生成 token。手机端只需要填写桌面网关界面展示的 WSS 连接地址。
+
+## v0.2.4 更新
+
+- 桌面网关新增按日期拆分的运行、错误和请求日志，便于排查 app-server、HTTP 和 WebSocket 状态。
+- 桌面端新增日志页，可直接查看最近日志日期、切换日志类型并刷新前 100 条记录。
+- Codex app-server 标准输出和错误输出会写入日志，同时继续保留原有输出缓存。
+- 请求发送失败、超时取消和 Codex RPC 返回错误时会记录脱敏后的摘要，避免泄露 token 和正文内容。
 
 ## v0.2.3 更新
 

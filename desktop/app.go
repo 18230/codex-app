@@ -18,15 +18,19 @@ type App struct {
 	window  *application.WebviewWindow
 	store   *ConfigStore
 	gateway *Gateway
+	logger  *GatewayLogger
 	mu      sync.Mutex
 }
 
 // NewApp 创建桌面应用实例。
 func NewApp() *App {
 	store := NewConfigStore()
+	logger := NewGatewayLogger()
+	logger.Run("桌面应用初始化")
 	return &App{
 		store:   store,
-		gateway: NewGateway(store),
+		logger:  logger,
+		gateway: NewGateway(store, logger),
 	}
 }
 
@@ -48,6 +52,9 @@ func (a *App) attachWindow(window *application.WebviewWindow) {
 
 // shutdown 退出应用前停止网关和 Codex 子进程。
 func (a *App) shutdown() {
+	if a.logger != nil {
+		a.logger.Run("桌面应用退出")
+	}
 	_ = a.gateway.Stop()
 }
 
@@ -179,6 +186,16 @@ func (a *App) ConnectionURL(host string) (string, error) {
 		host = "https://" + host
 	}
 	return fmt.Sprintf("%s?token=%s", host, cfg.Token), nil
+}
+
+// ListLogDays 返回已有日志日期，供前端日志选项卡选择。
+func (a *App) ListLogDays() ([]string, error) {
+	return a.logger.ListDays()
+}
+
+// ReadLogEntries 读取指定日期和类型的前 100 条日志。
+func (a *App) ReadLogEntries(day string, kind string) ([]LogEntry, error) {
+	return a.logger.ReadEntries(day, kind, 100)
 }
 
 // ShowWindow 从托盘菜单恢复主窗口。
