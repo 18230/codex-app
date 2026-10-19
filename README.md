@@ -1,6 +1,6 @@
 # Codex App
 
-本项目提供一个自用 Codex 手机端入口：
+本项目是一个开源的 Codex 手机端入口，任何人都可以免费使用：
 
 - `desktop`：Go + Wails v3 macOS 桌面网关，监听本机端口，负责鉴权、连接 Codex app-server、转发实时输出和托盘常驻。
 - `android`：Android 原生 Kotlin 客户端，通过 WebSocket 连接 `https://xxx.com`。
@@ -186,3 +186,7 @@ cd android
 adb devices
 adb -s 设备序列号 install -r app/build/outputs/apk/debug/codex-app.apk
 ```
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
